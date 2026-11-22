@@ -47,7 +47,7 @@ final class HEVCEncoder {
         set(kVTCompressionPropertyKey_DataRateLimits, limits)
         // Keyframes only on demand (client requests them after packet loss) plus a safety net every 10 s.
         set(kVTCompressionPropertyKey_MaxKeyFrameInterval, NSNumber(value: fps * 10))
-        set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 1NSNumber(value: 0))
+        set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, NSNumber(value: 10))
 
         VTCompressionSessionPrepareToEncodeFrames(s)
         lock.lock(); session = s; forceKey = true; lock.unlock()
