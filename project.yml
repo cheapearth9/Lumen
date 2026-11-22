@@ -1,0 +1,72 @@
+name: Lumen
+options:
+  bundleIdPrefix: dev.lumen
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "16.0"
+    macOS: "13.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  LumenClient:
+    type: application
+    platform: iOS
+    sources:
+      - Client
+      - Shared
+    info:
+      path: Client/Info.plist
+      properties:
+        CFBundleDisplayName: Lumen
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSLocalNetworkUsageDescription: Lumen finds and connects to your Mac on the local network.
+        NSBonjourServices:
+          - _lumen._udp
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.lumen.client
+        PRODUCT_NAME: Lumen
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        GENERATE_INFOPLIST_FILE: NO
+
+  LumenHost:
+    type: application
+    platform: macOS
+    sources:
+      - Host
+      - Shared
+    info:
+      path: Host/Info.plist
+      properties:
+        CFBundleDisplayName: Lumen Host
+        LSMinimumSystemVersion: "13.0"
+        NSLocalNetworkUsageDescription: Lumen Host advertises this Mac to your devices on the local network.
+        NSBonjourServices:
+          - _lumen._udp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.lumen.host
+        PRODUCT_NAME: LumenHost
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_APP_SANDBOX: NO
+        GENERATE_INFOPLIST_FILE: NO

@@ -1,0 +1,11 @@
+.DS_Store
+build/
+dist/
+DerivedData/
+*.xcodeproj
+xcuserdata/
+Client/Info.plist
+Host/Info.plist
+HostWindows/bin/
+HostWindows/obj/
+*.user
