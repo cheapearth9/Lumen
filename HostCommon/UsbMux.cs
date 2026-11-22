@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Xml;
@@ -17,10 +18,10 @@ public sealed class UsbMux : IDisposable
     private readonly List<long> _devices = new();
     private bool _running;
     private int _generation;
-    private TcpClient? _listenClient;
+    private Socket? _listenClient;
 
     public Func<bool> WantsTunnel { get; set; } = () => true;
-    public Action<TcpClient>? OnTunnel { get; set; }
+    public Action<Socket>? OnTunnel { get; set; }
 
     /// True once we have a working connection to the Apple Mobile Device Service.
     public bool DaemonReachable { get; private set; }
@@ -41,7 +42,7 @@ public sealed class UsbMux : IDisposable
 
     public void Stop()
     {
-        TcpClient? c;
+        Socket? c;
         lock (_lock) { _running = false; c = _listenClient; _listenClient = null; _devices.Clear(); }
         DaemonReachable = false;
         try { c?.Close(); } catch { }
@@ -63,7 +64,7 @@ public sealed class UsbMux : IDisposable
                 if (c != null)
                 {
                     lock (_lock) _listenClient = c;
-                    var s = c.GetStream();
+                    var s = new NetworkStream(c, ownsSocket: false);
                     Send(s, new Dictionary<string, object> { ["MessageType"] = "Listen", ["ClientVersionString"] = "Lumen", ["ProgName"] = "Lumen" }, 1);
                     DaemonReachable = true;
                     while (Alive(gen))
@@ -110,14 +111,14 @@ public sealed class UsbMux : IDisposable
         }
     }
 
-    private static TcpClient? OpenTunnel(long deviceId)
+    private static Socket? OpenTunnel(long deviceId)
     {
-        TcpClient? c = null;
+        Socket? c = null;
         try
         {
             c = OpenDaemon();
             if (c == null) return null;
-            var s = c.GetStream();
+            var s = new NetworkStream(c, ownsSocket: false);
             int port = ((Wire.CablePort & 0xFF) << 8) | (Wire.CablePort >> 8);   // network byte order
             Send(s, new Dictionary<string, object>
             {
@@ -133,15 +134,30 @@ public sealed class UsbMux : IDisposable
         return null;
     }
 
-    private static TcpClient? OpenDaemon()
+    /// Apple Mobile Device Service listens on TCP 127.0.0.1:27015 on Windows; usbmuxd uses a unix socket
+    /// at /var/run/usbmuxd on macOS and Linux.
+    private static Socket? OpenDaemon()
     {
+        Socket? sock = null;
         try
         {
-            var c = new TcpClient { NoDelay = true };
-            if (!c.ConnectAsync("127.0.0.1", DaemonPort).Wait(1500)) { c.Close(); return null; }
-            return c;
+            if (OperatingSystem.IsWindows())
+            {
+                sock = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+                if (!sock.ConnectAsync(new IPEndPoint(IPAddress.Loopback, DaemonPort)).Wait(1500)) { sock.Close(); return null; }
+            }
+            else
+            {
+                sock = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+                sock.Connect(new UnixDomainSocketEndPoint("/var/run/usbmuxd"));
+            }
+            return sock;
         }
-        catch { return null; }
+        catch
+        {
+            try { sock?.Close(); } catch { }
+            return null;
+        }
     }
 
     // MARK: usbmuxd plist protocol (16-byte little-endian header + XML plist)

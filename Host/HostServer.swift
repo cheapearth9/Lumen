@@ -8,11 +8,14 @@ protocol HostLink: AnyObject {
     /// Sends already-built packets. Droppable packets (video) may be discarded under back-pressure.
     func send(_ packets: [Data], droppable: Bool)
     func close()
+    /// Encryption state of this link (nil until a handshake arrived).
+    var session: SecureSession? { get set }
 }
 
 /// Wi-Fi / Ethernet: one datagram per packet.
 final class UDPLink: HostLink {
     let conn: NWConnection
+    var session: SecureSession?
     init(_ c: NWConnection) { conn = c }
 
     func send(_ packets: [Data], droppable: Bool) {
@@ -31,6 +34,7 @@ final class TCPLink: HostLink {
     private var closed = false
     private let deframer = Deframer()
     let created = Date()
+    var session: SecureSession?
 
     var onPacket: ((Data) -> Void)?
     var onClosed: (() -> Void)?
@@ -115,6 +119,12 @@ final class HostServer {
     private var watchdog: DispatchSourceTimer?
     private var recent = Set<UInt32>()
     private var recentOrder = [UInt32]()
+    private var audioCounter: UInt32 = 0
+
+    /// Shown in the iOS app's list (Announce replies).
+    var serverName = "Mac"
+    /// Secret both sides must know; everything except discover/handshake is encrypted with keys derived from it.
+    var pairingKey = PairingStore.load()
 
     private let flag = NSLock()
     private var wants = false
@@ -245,7 +255,37 @@ final class HostServer {
         if client === link { dropClient(link) } else { updateWants() }
     }
 
-    private func packet(_ data: Data, from link: HostLink) {
+    private func packet(_ raw: Data, from link: HostLink) {
+        var data = raw
+        if SecureSession.isSealed(raw) {
+            guard let plain = link.session?.open(raw) else { return }   // forged, replayed, wrong code or no handshake
+            data = plain
+        } else {
+            // Only discovery and the key exchange may travel unencrypted.
+            guard let (ph, pp) = Wire.decode(raw) else { return }
+            switch ph.type {
+            case .handshake:
+                if let (session, reply) = SecureSession.accept(clientHello: pp, pairingKey: pairingKey) {
+                    link.session = session
+                    link.send([Wire.encode(PacketHeader(type: .handshake), payload: reply)], droppable: false)
+                }
+            case .discover:
+                let body = AnnounceInfo(platform: HostPlatform.mac.rawValue, name: serverName).encode()
+                link.send([Wire.encode(PacketHeader(type: .announce), payload: body)], droppable: false)
+            default:
+                break
+            }
+            return
+        }
+        handle(data, from: link)
+    }
+
+    private func sendSecure(_ link: HostLink, _ packets: [Data], droppable: Bool) {
+        guard let s = link.session else { return }
+        link.send(packets.compactMap { s.seal($0) }, droppable: droppable)
+    }
+
+    private func handle(_ data: Data, from link: HostLink) {
         guard let (h, payload) = Wire.decode(data) else { return }
         if client !== link {
             guard h.type == .hello else { return }
@@ -261,7 +301,7 @@ final class HostServer {
         case .keyframeRequest:
             onKeyframeRequest?()
         case .ping:
-            link.send([Wire.encode(PacketHeader(type: .ping, id: h.id))], droppable: false)
+            sendSecure(link, [Wire.encode(PacketHeader(type: .ping, id: h.id))], droppable: false)
         case .bye:
             dropClient(link)
         default:
@@ -281,7 +321,27 @@ final class HostServer {
 
     func sendWelcome(_ w: WelcomeInfo) {
         queue.async {
-            self.client?.send([Wire.encode(PacketHeader(type: .welcome), payload: w.encode())], droppable: false)
+            guard let c = self.client else { return }
+            self.sendSecure(c, [Wire.encode(PacketHeader(type: .welcome), payload: w.encode())], droppable: false)
+        }
+    }
+
+    /// Progress or an error for the client; an error makes the client show the text and disconnect.
+    func sendStatus(_ text: String, error: Bool) {
+        queue.async {
+            guard let c = self.client else { return }
+            var body = Data([error ? 1 : 0])
+            body.append(Data(text.utf8.prefix(300)))
+            self.sendSecure(c, [Wire.encode(PacketHeader(type: .status), payload: body)], droppable: false)
+        }
+    }
+
+    /// 960 bytes of 48 kHz stereo s16le PCM (240 frames).
+    func sendAudio(_ pcm: Data) {
+        queue.async {
+            guard let c = self.client else { return }
+            self.audioCounter &+= 1
+            self.sendSecure(c, [Wire.encode(PacketHeader(type: .audio, id: self.audioCounter), payload: pcm)], droppable: true)
         }
     }
 
@@ -291,7 +351,7 @@ final class HostServer {
             self.frameCounter &+= 1
             let frags = Wire.fragment(type: .video, flags: keyframe ? 1 : 0,
                                       id: self.frameCounter, timestampMs: timestampMs, payload: payload)
-            c.send(frags, droppable: true)
+            self.sendSecure(c, frags, droppable: true)
         }
     }
 }

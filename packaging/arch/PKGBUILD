@@ -1,0 +1,33 @@
+# Maintainer: Lumen
+# Built in CI from the prebuilt self-contained binary. Expected next to this file:
+#   lumenhost-${pkgver}-linux-x64.tar.gz   (contains the single file "lumenhost")
+#   lumen-host.desktop lumenhost.service 60-lumen-uinput.rules lumen.conf lumen.png lumenhost.install
+# Set the version with:  LUMEN_PKGVER=1.0.42 makepkg
+pkgname=lumenhost
+pkgver="${LUMEN_PKGVER:-1.0.0}"
+pkgrel=1
+pkgdesc="Lumen Host - stream this X11 screen to an iPhone or iPad"
+arch=('x86_64')
+url="https://github.com/cheapearth9/Lumen"
+license=('custom')
+depends=('ffmpeg' 'xorg-xdpyinfo' 'xorg-xrandr' 'glibc' 'gcc-libs')
+optdepends=('libpulse: system audio capture (pactl/parec)')
+# The .NET single-file bundle appends data to the executable; stripping corrupts it.
+options=('!strip' '!debug')
+install=lumenhost.install
+source=("lumenhost-${pkgver}-linux-x64.tar.gz"
+        'lumen-host.desktop'
+        'lumenhost.service'
+        '60-lumen-uinput.rules'
+        'lumen.conf'
+        'lumen.png')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/lumenhost" "$pkgdir/usr/bin/lumenhost"
+  install -Dm644 "$srcdir/lumen-host.desktop" "$pkgdir/usr/share/applications/lumen-host.desktop"
+  install -Dm644 "$srcdir/lumen.png" "$pkgdir/usr/share/icons/hicolor/512x512/apps/lumen-host.png"
+  install -Dm644 "$srcdir/lumenhost.service" "$pkgdir/usr/lib/systemd/user/lumenhost.service"
+  install -Dm644 "$srcdir/lumen.conf" "$pkgdir/etc/modules-load.d/lumen.conf"
+  install -Dm644 "$srcdir/60-lumen-uinput.rules" "$pkgdir/etc/udev/rules.d/60-lumen-uinput.rules"
+}

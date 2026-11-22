@@ -10,6 +10,8 @@ public interface ILink
     /// Droppable packets (video) may be discarded under back-pressure.
     void Send(IReadOnlyList<byte[]> packets, bool droppable);
     void Close();
+    /// Encryption state of this link (null until a handshake arrived).
+    SecureSession? Session { get; set; }
 }
 
 /// Wi-Fi / Ethernet: one datagram per packet.
@@ -18,6 +20,7 @@ internal sealed class UdpLink : ILink
     private readonly Socket _sock;
     public readonly EndPoint Remote;
     public DateTime LastSeen = DateTime.UtcNow;
+    public SecureSession? Session { get; set; }
 
     public UdpLink(Socket sock, EndPoint remote) { _sock = sock; Remote = remote; }
 
@@ -37,7 +40,7 @@ internal sealed class UdpLink : ILink
 /// Cable: a usbmuxd tunnel (reliable byte stream), length-prefixed packets.
 internal sealed class TcpLink : ILink
 {
-    private readonly TcpClient _tcp;
+    private readonly Socket _sock;
     private readonly Stream _stream;
     private readonly BlockingCollection<byte[]> _queue = new();
     private readonly object _lock = new();
@@ -45,14 +48,15 @@ internal sealed class TcpLink : ILink
     private bool _closed;
 
     public readonly DateTime Created = DateTime.UtcNow;
+    public SecureSession? Session { get; set; }
     public Action<byte[]>? OnPacket;
     public Action? OnClosed;
 
-    public TcpLink(TcpClient tcp)
+    public TcpLink(Socket sock)
     {
-        _tcp = tcp;
-        _tcp.NoDelay = true;
-        _stream = tcp.GetStream();
+        _sock = sock;
+        try { _sock.NoDelay = true; } catch { }       // not applicable to unix-domain sockets
+        _stream = new NetworkStream(sock, ownsSocket: true);
     }
 
     public void Start()
@@ -125,7 +129,8 @@ internal sealed class TcpLink : ILink
             _closed = true;
         }
         try { _queue.CompleteAdding(); } catch { }
-        try { _tcp.Close(); } catch { }
+        try { _stream.Dispose(); } catch { }
+        try { _sock.Close(); } catch { }
     }
 }
 
@@ -139,11 +144,17 @@ public sealed class HostServer : IDisposable
     private readonly List<TcpLink> _tunnels = new();
     private ILink? _client;
     private DateTime _lastHeard = DateTime.UtcNow;
-    private uint _frameCounter;
+    private uint _frameCounter, _audioCounter;
     private readonly HashSet<uint> _recent = new();
     private readonly Queue<uint> _recentOrder = new();
     private System.Threading.Timer? _watchdog;
     private bool _running;
+
+    /// Shown on the iOS app's list; sent in Announce replies.
+    public string ServerName { get; set; } = Environment.MachineName;
+    public byte PlatformId { get; set; }
+    /// Secret both sides must know (see PairingCode). Packets other than discover/handshake are only accepted encrypted.
+    public byte[] PairingKey { get; set; } = PairingCode.LoadOrCreate();
 
     public event Action<HelloInfo>? Hello;
     public event Action<InputEvent>? Input;
@@ -239,9 +250,9 @@ public sealed class HostServer : IDisposable
     // MARK: Cable
 
     /// Called by the usbmux watcher with a connected tunnel.
-    public void AddTunnel(TcpClient tcp)
+    public void AddTunnel(Socket tunnel)
     {
-        var link = new TcpLink(tcp);
+        var link = new TcpLink(tunnel);
         link.OnPacket = d => HandlePacket(d, link);
         link.OnClosed = () => LinkClosed(link);
         lock (_gate)
@@ -271,9 +282,61 @@ public sealed class HostServer : IDisposable
         DropClient(link);
     }
 
-    private void HandlePacket(byte[] data, ILink link)
+    private void HandlePacket(byte[] raw, ILink link)
+    {
+        byte[] data = raw;
+        if (SecureSession.IsSealed(raw))
+        {
+            var session = link.Session;
+            var plain = session?.Open(raw);
+            if (plain == null) return;                    // forged, replayed, wrong pairing code, or no handshake
+            data = plain;
+        }
+        else
+        {
+            // Only discovery and the key exchange may travel unencrypted.
+            if (!Wire.TryDecode(raw, out var ph, out var pp)) return;
+            if (ph.Type == PacketType.Handshake)
+            {
+                var s = SecureSession.Accept(pp.ToArray(), PairingKey, out var reply);
+                if (s == null) return;
+                link.Session = s;
+                link.Send(new[] { Wire.Simple(PacketType.Handshake, 0, reply) }, false);
+                return;
+            }
+            if (ph.Type != PacketType.Discover) return;
+        }
+        HandlePlain(data, link);
+    }
+
+    /// Seals packets with the link's session (dropping them if there is none) and sends.
+    private static void SendSecure(ILink link, IReadOnlyList<byte[]> packets, bool droppable)
+    {
+        var session = link.Session;
+        if (session == null) return;
+        var sealedPackets = new List<byte[]>(packets.Count);
+        foreach (var p in packets)
+        {
+            var sp = session.Seal(p);
+            if (sp != null) sealedPackets.Add(sp);
+        }
+        link.Send(sealedPackets, droppable);
+    }
+
+    private void HandlePlain(byte[] data, ILink link)
     {
         if (!Wire.TryDecode(data, out var h, out var payload)) return;
+
+        // Subnet-scan discovery from the iOS app (works even where mDNS is blocked).
+        if (h.Type == PacketType.Discover)
+        {
+            var name = System.Text.Encoding.UTF8.GetBytes(ServerName.Length > 60 ? ServerName[..60] : ServerName);
+            var body = new byte[1 + name.Length];
+            body[0] = PlatformId;
+            name.CopyTo(body, 1);
+            link.Send(new[] { Wire.Simple(PacketType.Announce, 0, body) }, false);
+            return;
+        }
 
         ILink? old = null;
         bool becameConnected = false;
@@ -302,7 +365,7 @@ public sealed class HostServer : IDisposable
                 if (IsNew(h.Id) && InputEvent.TryDecode(payload.Span, out var e)) Input?.Invoke(e);
                 break;
             case PacketType.Ping:
-                link.Send(new[] { Wire.Simple(PacketType.Ping, h.Id) }, false);
+                SendSecure(link, new[] { Wire.Simple(PacketType.Ping, h.Id) }, false);
                 break;
             case PacketType.Bye:
                 DropClient(link);
@@ -325,11 +388,33 @@ public sealed class HostServer : IDisposable
 
     // MARK: Sending
 
+    /// Tell the client something (progress or an error). Errors make the client show the message and disconnect.
+    public void SendStatus(string text, bool error)
+    {
+        ILink? c;
+        lock (_gate) c = _client;
+        if (c == null) return;
+        var t = System.Text.Encoding.UTF8.GetBytes(text.Length > 300 ? text[..300] : text);
+        var body = new byte[1 + t.Length];
+        body[0] = error ? (byte)1 : (byte)0;
+        t.CopyTo(body, 1);
+        SendSecure(c, new[] { Wire.Simple(PacketType.Status, 0, body) }, false);
+    }
+
     public void SendWelcome(WelcomeInfo w)
     {
         ILink? c;
         lock (_gate) c = _client;
-        c?.Send(new[] { Wire.Simple(PacketType.Welcome, 0, w.Encode()) }, false);
+        if (c != null) SendSecure(c, new[] { Wire.Simple(PacketType.Welcome, 0, w.Encode()) }, false);
+    }
+
+    /// 960-byte PCM audio packet (48 kHz stereo s16le, 240 frames).
+    public void SendAudio(byte[] pcm)
+    {
+        ILink? c;
+        uint id;
+        lock (_gate) { c = _client; if (c != null) id = ++_audioCounter; else return; }
+        SendSecure(c, new[] { Wire.Simple(PacketType.Audio, id, pcm) }, true);
     }
 
     public void SendVideo(byte[] payload, bool keyframe, uint timestampMs)
@@ -337,7 +422,7 @@ public sealed class HostServer : IDisposable
         ILink? c;
         uint id;
         lock (_gate) { c = _client; if (c != null) id = ++_frameCounter; else return; }
-        c.Send(Wire.Fragment(PacketType.Video, keyframe ? (byte)1 : (byte)0, id, timestampMs, payload), true);
+        SendSecure(c, Wire.Fragment(PacketType.Video, keyframe ? (byte)1 : (byte)0, id, timestampMs, payload), true);
     }
 
     /// A frame was lost before it could be sent: burn its id so the client notices the gap and waits for a keyframe.

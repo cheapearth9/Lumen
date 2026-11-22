@@ -14,6 +14,11 @@ enum PacketType: UInt8 {
     case keyframeRequest = 5
     case ping = 6           // echoed by host, used for RTT
     case bye = 7
+    case status = 8         // host -> client : UTF-8 message (errors / progress)
+    case discover = 9       // client -> host : "who is out there?" (unicast subnet scan)
+    case announce = 10      // host -> client : platform byte + UTF-8 host name
+    case handshake = 11     // key exchange, the only packet type besides discover/announce that is sent unencrypted
+    case audio = 12         // host -> client : 240 frames of 48 kHz stereo s16le PCM (960 bytes)
 }
 
 // MARK: - Byte helpers
@@ -74,7 +79,7 @@ struct PacketHeader {
 
 enum Wire {
     static let magic: UInt16 = 0x4C4D // "LM"
-    static let maxPayload = 1180      // keeps datagrams under typical 1280 MTU
+    static let maxPayload = 1150      // sealed (encrypted) datagrams stay under a 1280 byte MTU
 
     static func encode(_ h: PacketHeader, payload: Data = Data()) -> Data {
         var w = ByteWriter()
@@ -166,37 +171,76 @@ final class Reassembler {
 // MARK: - Handshake payloads
 
 struct HelloInfo: Equatable {
+    static let flagAudio: UInt8 = 1      // client wants audio
+    static let flagExtend: UInt8 = 2     // client wants an extended desktop (virtual display) instead of a mirror
+
     var width: UInt16
     var height: UInt16
     var fps: UInt8
     var bitrateMbps: UInt16
+    var flags: UInt8 = HelloInfo.flagAudio
+
+    var wantsAudio: Bool { flags & HelloInfo.flagAudio != 0 }
+    var wantsExtend: Bool { flags & HelloInfo.flagExtend != 0 }
 
     func encode() -> Data {
         var w = ByteWriter()
-        w.u16(width); w.u16(height); w.u8(fps); w.u16(bitrateMbps)
+        w.u16(width); w.u16(height); w.u8(fps); w.u16(bitrateMbps); w.u8(flags)
         return w.data
     }
     static func decode(_ d: Data) -> HelloInfo? {
         var r = ByteReader(d)
         guard let w = r.u16(), let h = r.u16(), let f = r.u8(), let b = r.u16() else { return nil }
-        return HelloInfo(width: w, height: h, fps: f, bitrateMbps: b)
+        return HelloInfo(width: w, height: h, fps: f, bitrateMbps: b, flags: r.u8() ?? HelloInfo.flagAudio)
     }
 }
 
 struct WelcomeInfo {
-    var width: UInt16
+    /// Capability bits.
+    static let capNativeTouch: UInt8 = 1     // host can inject real multi-touch events
+    static let capAudio: UInt8 = 2           // host streams system audio
+
+    var width: UInt16          // video size
     var height: UInt16
     var fps: UInt8
+    var caps: UInt8 = 0
+    var sourceWidth: UInt16 = 0   // real pixel size of the host display (for pointer scaling)
+    var sourceHeight: UInt16 = 0
+    var mode: UInt8 = 0           // 0 mirror, 1 extend (what the host is actually doing)
 
     func encode() -> Data {
         var w = ByteWriter()
-        w.u16(width); w.u16(height); w.u8(fps)
+        w.u16(width); w.u16(height); w.u8(fps); w.u8(caps); w.u16(sourceWidth); w.u16(sourceHeight); w.u8(mode)
         return w.data
     }
     static func decode(_ d: Data) -> WelcomeInfo? {
         var r = ByteReader(d)
         guard let w = r.u16(), let h = r.u16(), let f = r.u8() else { return nil }
-        return WelcomeInfo(width: w, height: h, fps: f)
+        // Fields added later are optional so older hosts still work.
+        let caps = r.u8() ?? 0
+        let sw = r.u16() ?? w
+        let sh = r.u16() ?? h
+        let mode = r.u8() ?? 0
+        return WelcomeInfo(width: w, height: h, fps: f, caps: caps, sourceWidth: sw, sourceHeight: sh, mode: mode)
+    }
+}
+
+enum HostPlatform: UInt8 { case mac = 1, windows = 2, linux = 3 }
+
+struct AnnounceInfo {
+    var platform: UInt8
+    var name: String
+
+    func encode() -> Data {
+        var w = ByteWriter()
+        w.u8(platform)
+        w.bytes(Data(name.utf8.prefix(60)))
+        return w.data
+    }
+    static func decode(_ d: Data) -> AnnounceInfo? {
+        var r = ByteReader(d)
+        guard let p = r.u8() else { return nil }
+        return AnnounceInfo(platform: p, name: String(decoding: r.rest(), as: UTF8.self))
     }
 }
 
@@ -208,11 +252,13 @@ enum InputEvent {
     case button(UInt8, down: Bool)            // 0 left, 1 right, 2 middle
     case scroll(dx: Int16, dy: Int16)
     case key(UInt16, down: Bool)              // macOS virtual key code
+    case touch(id: UInt8, phase: UInt8, x: UInt16, y: UInt16)   // phase 0 down, 1 move, 2 up, 3 cancel; x/y 0...65535
 
     /// Events that must not be lost (sent twice, de-duplicated on the host).
     var isDiscrete: Bool {
         switch self {
         case .button, .key: return true
+        case .touch(_, let phase, _, _): return phase >= 2
         default: return false
         }
     }
@@ -225,6 +271,7 @@ enum InputEvent {
         case .button(let b, let down):  w.u8(3); w.u8(b); w.u8(down ? 1 : 0)
         case .scroll(let dx, let dy):   w.u8(4); w.i16(dx); w.i16(dy)
         case .key(let c, let down):     w.u8(5); w.u16(c); w.u8(down ? 1 : 0)
+        case .touch(let id, let ph, let x, let y): w.u8(6); w.u8(id); w.u8(ph); w.u16(x); w.u16(y)
         }
         return w.data
     }
@@ -238,6 +285,7 @@ enum InputEvent {
         case 3: if let a = r.u8(), let b = r.u8() { return .button(a, down: b != 0) }
         case 4: if let a = r.i16(), let b = r.i16() { return .scroll(dx: a, dy: b) }
         case 5: if let a = r.u16(), let b = r.u8() { return .key(a, down: b != 0) }
+        case 6: if let i = r.u8(), let p = r.u8(), let x = r.u16(), let y = r.u16() { return .touch(id: i, phase: p, x: x, y: y) }
         default: break
         }
         return nil

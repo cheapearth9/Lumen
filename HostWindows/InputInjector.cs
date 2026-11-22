@@ -71,6 +71,9 @@ public sealed class InputInjector
                 case InputKind.Key:
                     Key((ushort)e.A, e.B != 0);
                     break;
+                case InputKind.Touch:
+                    Touch(e.A, e.B, e.C, e.D);
+                    break;
             }
         }
     }
@@ -82,7 +85,109 @@ public sealed class InputInjector
         {
             foreach (var b in _heldButtons.ToArray()) Button(b, false);
             foreach (var k in _heldKeys.ToArray()) Key(k, false);
+            foreach (var id in _contacts.Keys.ToArray()) Touch(id, 3, 0, 0);
         }
+    }
+
+
+    // MARK: Native multi-touch (Windows touch injection: shows the real touch feedback, taps/scroll/pinch are handled by Windows)
+
+    [StructLayout(LayoutKind.Sequential)] private struct POINT { public int x, y; }
+    [StructLayout(LayoutKind.Sequential)] private struct RECT { public int left, top, right, bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINTER_INFO
+    {
+        public uint pointerType, pointerId, frameId, pointerFlags;
+        public IntPtr sourceDevice, hwndTarget;
+        public POINT ptPixelLocation, ptHimetricLocation, ptPixelLocationRaw, ptHimetricLocationRaw;
+        public uint dwTime, historyCount;
+        public int InputData;
+        public uint dwKeyStates;
+        public ulong PerformanceCount;
+        public uint ButtonChangeType;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINTER_TOUCH_INFO
+    {
+        public POINTER_INFO pointerInfo;
+        public uint touchFlags, touchMask;
+        public RECT rcContact, rcContactRaw;
+        public uint orientation, pressure;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool InitializeTouchInjection(uint maxCount, uint dwMode);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool InjectTouchInput(uint count, POINTER_TOUCH_INFO[] contacts);
+
+    private static bool _touchInit, _touchOk;
+    private readonly Dictionary<int, POINTER_TOUCH_INFO> _contacts = new();
+
+    /// True when Windows lets us inject touch (Windows 8 or newer).
+    public static bool TouchAvailable
+    {
+        get
+        {
+            if (!_touchInit)
+            {
+                _touchInit = true;
+                try { _touchOk = InitializeTouchInjection(10, 1 /* TOUCH_FEEDBACK_DEFAULT */); } catch { _touchOk = false; }
+            }
+            return _touchOk;
+        }
+    }
+
+    private static POINTER_TOUCH_INFO MakeContact(int id, int px, int py, uint flags)
+    {
+        var c = new POINTER_TOUCH_INFO
+        {
+            touchMask = 0x7,                       // contact area | orientation | pressure
+            orientation = 90,
+            pressure = 32000,
+            rcContact = new RECT { left = px - 2, top = py - 2, right = px + 2, bottom = py + 2 }
+        };
+        c.pointerInfo.pointerType = 2;             // PT_TOUCH
+        c.pointerInfo.pointerId = (uint)id;
+        c.pointerInfo.pointerFlags = flags;
+        c.pointerInfo.ptPixelLocation = new POINT { x = px, y = py };
+        return c;
+    }
+
+    /// phase: 0 down, 1 move, 2 up, 3 cancel; x/y are 0..65535 across the streamed display.
+    private void Touch(int id, int phase, int nx, int ny)
+    {
+        if (!TouchAvailable) return;
+        const uint NEW = 0x1, INRANGE = 0x2, INCONTACT = 0x4, FIRSTBUTTON = 0x10, CANCELED = 0x8000, DOWN = 0x10000, UPDATE = 0x20000, UP = 0x40000;
+
+        int px = _monitor.X + (int)Math.Round(nx / 65535.0 * (_monitor.Width - 1));
+        int py = _monitor.Y + (int)Math.Round(ny / 65535.0 * (_monitor.Height - 1));
+
+        var frame = new List<POINTER_TOUCH_INFO>();
+        foreach (var key in _contacts.Keys.ToArray())
+        {
+            if (key == id) continue;
+            var other = _contacts[key];
+            other.pointerInfo.pointerFlags = INRANGE | INCONTACT | FIRSTBUTTON | UPDATE;
+            _contacts[key] = other;
+            frame.Add(other);
+        }
+
+        POINTER_TOUCH_INFO me;
+        switch (phase)
+        {
+            case 0: me = MakeContact(id, px, py, INRANGE | INCONTACT | FIRSTBUTTON | NEW | DOWN); break;
+            case 1:
+                if (!_contacts.ContainsKey(id)) return;
+                me = MakeContact(id, px, py, INRANGE | INCONTACT | FIRSTBUTTON | UPDATE); break;
+            default:
+                if (!_contacts.TryGetValue(id, out var last)) return;
+                me = MakeContact(id, last.pointerInfo.ptPixelLocation.x, last.pointerInfo.ptPixelLocation.y, phase == 3 ? (UP | CANCELED) : UP);
+                break;
+        }
+        frame.Add(me);
+        InjectTouchInput((uint)frame.Count, frame.ToArray());
+
+        if (phase >= 2) _contacts.Remove(id); else _contacts[id] = me;
     }
 
     private void Button(int index, bool down)

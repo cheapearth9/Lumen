@@ -83,7 +83,8 @@ struct RootView: View {
         let b = target.nativeBounds
         let w = min(3840, max(b.width, b.height))
         let h = min(2160, min(b.width, b.height))
-        return HelloInfo(width: UInt16(w), height: UInt16(h), fps: UInt8(fps), bitrateMbps: UInt16(mbps))
+        return HelloInfo(width: UInt16(w), height: UInt16(h), fps: UInt8(fps), bitrateMbps: UInt16(mbps),
+                         flags: LumenSettings.helloFlags())
     }
 }
 
@@ -94,15 +95,50 @@ struct ConnectView: View {
     @Binding var manualHost: String
     let makeHello: () -> HelloInfo
 
+    @AppStorage(LumenSettings.extendKey) private var extendMode = false
+    @AppStorage(LumenSettings.audioKey) private var audioOn = true
+    @AppStorage(LumenSettings.touchModeKey) private var touchMode = TouchEngine.Mode.touchscreen.rawValue
+    @State private var recents: [RecentHost] = []
+
     var body: some View {
         NavigationStack {
             List {
-                Section("Macs on your network") {
-                    if client.servers.isEmpty {
+                Section("Computers on your network") {
+                    if client.hosts.isEmpty {
                         HStack { ProgressView(); Text("Searching…").foregroundStyle(.secondary) }
                     }
-                    ForEach(client.servers) { s in
-                        Button(s.name) { client.connect(endpoint: s.endpoint, hello: makeHello()) }
+                    ForEach(client.hosts) { h in
+                        Button {
+                            client.connect(host: h, hello: makeHello())
+                        } label: {
+                            HStack {
+                                Text(h.name)
+                                Spacer()
+                                if !h.platformLabel.isEmpty {
+                                    Text(h.platformLabel).font(.footnote).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !recents.isEmpty {
+                    Section("Recent") {
+                        ForEach(recents) { r in
+                            Button {
+                                client.connect(recent: r, hello: makeHello())
+                            } label: {
+                                HStack {
+                                    Text(r.name)
+                                    Spacer()
+                                    Text(r.address).font(.footnote).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .onDelete { offsets in
+                            for i in offsets { RecentHosts.remove(address: recents[i].address) }
+                            recents = RecentHosts.load()
+                        }
                     }
                 }
 
@@ -125,6 +161,27 @@ struct ConnectView: View {
                         .disabled(manualHost.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
 
+                Section("Display") {
+                    Picker("Display mode", selection: $extendMode) {
+                        Text("Mirror").tag(false)
+                        Text("Extend").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    Text(extendMode ? "Adds a new screen to the computer, sized for this device."
+                                    : "Shows the computer's existing screen.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Toggle("Sound", isOn: $audioOn)
+                }
+
+                Section("Touch") {
+                    Picker("Touch mode", selection: $touchMode) {
+                        Text("Touchpad").tag(TouchEngine.Mode.touchpad.rawValue)
+                        Text("Touchscreen").tag(TouchEngine.Mode.touchscreen.rawValue)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
                 Section("Quality") {
                     Picker("Frame rate", selection: $fps) {
                         Text("30").tag(30); Text("60").tag(60); Text("120").tag(120)
@@ -143,6 +200,12 @@ struct ConnectView: View {
                 }
             }
             .navigationTitle("Lumen")
+            .refreshable { await client.rescanAndWait() }
+            .onAppear {
+                recents = RecentHosts.load()
+                client.setDiscoveryActive(true)
+            }
+            .onDisappear { client.setDiscoveryActive(false) }
         }
     }
 }

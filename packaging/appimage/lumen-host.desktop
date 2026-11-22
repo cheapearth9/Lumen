@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Lumen Host
+GenericName=Screen streaming host
+Comment=Stream this screen to the Lumen app on your iPhone or iPad
+Exec=lumenhost
+Icon=lumen-host
+Terminal=true
+Categories=Utility;Network;

@@ -1,0 +1,6 @@
+#!/bin/sh
+# AppImage entry point: use the bundled static ffmpeg, then start the host.
+HERE="$(dirname "$(readlink -f "$0")")"
+export PATH="$HERE/usr/bin:$PATH"
+export LUMEN_FFMPEG="$HERE/usr/bin/ffmpeg"
+exec "$HERE/usr/bin/lumenhost" "$@"

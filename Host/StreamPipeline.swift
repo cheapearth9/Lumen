@@ -24,7 +24,16 @@ final class StreamPipeline: @unchecked Sendable {
     private var statBytes = 0
     private var statFrames = 0
 
+    /// The display the user picked (what Mirror streams). In Extend mode the stream uses a virtual display instead.
     var displayID: CGDirectDisplayID = CGMainDisplayID()
+    private var activeDisplayID: CGDirectDisplayID = CGMainDisplayID()
+    private var virtualDisplay: VirtualDisplay?
+    private var extended = false
+    /// Set by the host's Mirror / Extend buttons (nil = follow the client's request).
+    private(set) var modeOverride: Bool?
+    private var lastClientExtend: Bool?
+    var onMode: ((Bool) -> Void)?
+    var pairingKey: Data { server.pairingKey }
     var onStatus: ((String) -> Void)?
     var onClient: ((Bool) -> Void)?
 
@@ -43,6 +52,7 @@ final class StreamPipeline: @unchecked Sendable {
             self.frameLock.lock(); self.lastBuffer = pb; self.frameLock.unlock()
             self.encoder.encode(pb, pts: pts)
         }
+        capture.onAudio = { [weak self] pcm in self?.server.sendAudio(pcm) }
         capture.onStopped = { [weak self] err in
             self?.onStatus?("Capture stopped: \(err?.localizedDescription ?? "unknown")")
         }
@@ -50,10 +60,24 @@ final class StreamPipeline: @unchecked Sendable {
     }
 
     func start(name: String) throws {
+        server.serverName = name
         try server.start(name: name)
         usb.wantsTunnel = { [weak server] in server?.wantsTunnel ?? false }
         usb.onTunnel = { [weak server] fd in server?.addTunnel(fd: fd) }
         usb.start()
+    }
+
+    func setMode(extend: Bool) {
+        ctl.async {
+            self.modeOverride = extend
+            if let h = self.active { self.active = nil; self.begin(h) } else { self.onMode?(extend) }
+        }
+    }
+
+    func newPairingKey() -> Data {
+        let k = PairingStore.regenerate()
+        server.pairingKey = k
+        return k
     }
 
     func stop() {
@@ -74,34 +98,63 @@ final class StreamPipeline: @unchecked Sendable {
     private func begin(_ h: HelloInfo) {
         if let a = active, a == h {
             // Client repeated its hello (our welcome was probably lost).
-            server.sendWelcome(WelcomeInfo(width: UInt16(size.w), height: UInt16(size.h), fps: h.fps))
+            server.sendWelcome(welcome(w: size.w, h: size.h, fps: Int(h.fps)))
             ctl.asyncAfter(deadline: .now() + 0.15) { self.refreshKeyframe() }
             return
         }
         if starting { return }
         starting = true
+        // A client that changes its extend flag overrides the host's button (last writer wins).
+        if let prev = lastClientExtend, prev != h.wantsExtend { modeOverride = nil }
+        lastClientExtend = h.wantsExtend
+        let wantExtend = modeOverride ?? h.wantsExtend
 
         Task { [self] in
             await capture.stop()
             encoder.invalidate()
             do {
-                let s = Self.fit(displayID: displayID, maxW: Int(h.width), maxH: Int(h.height))
+                virtualDisplay?.destroy(); virtualDisplay = nil
+                activeDisplayID = displayID
+                extended = false
+                if wantExtend {
+                    if let v = VirtualDisplay.create(width: max(640, Int(h.width)), height: max(480, Int(h.height))) {
+                        virtualDisplay = v
+                        activeDisplayID = v.displayID
+                        extended = true
+                        try? await Task.sleep(nanoseconds: 900_000_000)   // let macOS register the new display
+                    } else {
+                        let note = "Extend isn't available on this Mac (macOS refused to create a virtual display), so the screen is mirrored."
+                        onStatus?(note)
+                        server.sendStatus(note, error: false)
+                    }
+                }
+                onMode?(extended)
+                let s = Self.fit(displayID: activeDisplayID, maxW: Int(h.width), maxH: Int(h.height))
                 let fps = max(15, min(Int(h.fps), 120))
                 try encoder.configure(width: s.w, height: s.h, fps: fps, bitrate: max(2, Int(h.bitrateMbps)) * 1_000_000)
-                injector.configure(displayID: displayID)
-                try await capture.start(displayID: displayID, width: s.w, height: s.h, fps: fps)
+                injector.configure(displayID: activeDisplayID)
+                try await capture.start(displayID: activeDisplayID, width: s.w, height: s.h, fps: fps, audio: h.wantsAudio)
                 ctl.async {
                     self.size = s; self.active = h; self.starting = false
                     self.preventSleep(true)
                 }
-                server.sendWelcome(WelcomeInfo(width: UInt16(s.w), height: UInt16(s.h), fps: UInt8(fps)))
+                server.sendWelcome(welcome(w: s.w, h: s.h, fps: fps))
                 ctl.asyncAfter(deadline: .now() + 0.15) { self.refreshKeyframe() }
                 onStatus?("Streaming \(s.w)×\(s.h) @ \(fps) fps")
             } catch {
                 ctl.async { self.starting = false }
-                onStatus?("Failed: \(error.localizedDescription). Is Screen Recording allowed?")
+                let msg = "Failed: \(error.localizedDescription). Is Screen Recording allowed?"
+                onStatus?(msg)
+                server.sendStatus(msg, error: true)
             }
         }
+    }
+
+    private func welcome(w: Int, h: Int, fps: Int) -> WelcomeInfo {
+        var dw = CGDisplayPixelsWide(activeDisplayID), dh = CGDisplayPixelsHigh(activeDisplayID)
+        if let mode = CGDisplayCopyDisplayMode(activeDisplayID) { dw = mode.pixelWidth; dh = mode.pixelHeight }
+        return WelcomeInfo(width: UInt16(w), height: UInt16(h), fps: UInt8(fps), caps: WelcomeInfo.capAudio,
+                           sourceWidth: UInt16(min(dw, 65535)), sourceHeight: UInt16(min(dh, 65535)), mode: extended ? 1 : 0)
     }
 
     /// ScreenCaptureKit only emits frames when the screen changes, so after a keyframe request
@@ -115,6 +168,8 @@ final class StreamPipeline: @unchecked Sendable {
     private func end() {
         frameLock.lock(); lastBuffer = nil; frameLock.unlock()
         active = nil
+        virtualDisplay?.destroy(); virtualDisplay = nil
+        extended = false
         injector.releaseAll()
         preventSleep(false)
         Task { [self] in

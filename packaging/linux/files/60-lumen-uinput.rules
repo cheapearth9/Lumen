@@ -1,0 +1,2 @@
+# Lets members of group "input" create virtual input devices (remote mouse/keyboard for Lumen Host).
+KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

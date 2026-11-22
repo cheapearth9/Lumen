@@ -1,0 +1,17 @@
+# systemd USER unit. Not enabled by default. Enable with:
+#   systemctl --user enable --now lumenhost
+# Needs an X11 session; the DISPLAY/XAUTHORITY variables must be known to the
+# user manager (most desktops import them at login; otherwise run
+# `systemctl --user import-environment DISPLAY XAUTHORITY`).
+[Unit]
+Description=Lumen Host (screen streaming to Lumen for iOS)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/lumenhost
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
