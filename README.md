@@ -1,7 +1,7 @@
 # Lumen
 
 Low-latency screen streaming from a **Mac or Windows PC** to an **iPhone/iPad**, over **Wi-Fi or a USB cable**, with
-mouse + keyboard input, pointer lock for games (Minecraft, Roblox), and output to an external monitor plugged into the
+mouse + keyboard input, pointer lock for games, and output to an external monitor plugged into the
 iOS device. It uses its own protocol, not AirPlay and not Sunshine/Moonlight.
 
 ```
