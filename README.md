@@ -1,17 +1,16 @@
 # Lumen
 
-Low-latency screen streaming from a **Mac or Windows PC** to an **iPhone/iPad**, over **Wi-Fi or a USB cable**, with
-mouse + keyboard input, pointer lock for games, and output to an external monitor plugged into the
-iOS device. It uses its own protocol, not AirPlay and not Sunshine/Moonlight.
+Low-latency screen streaming from a **Mac, Windows PC or Linux PC** to an **iPhone/iPad**, over **Wi-Fi or a USB cable**.
+Mouse, keyboard and real touch input go back to the computer. Audio is streamed too, everything is encrypted, and the
+iOS device can output to an external monitor. It uses its own protocol, not AirPlay and not Sunshine/Moonlight.
 
 ```
-Mac host   : ScreenCaptureKit -> VideoToolbox HEVC (hardware) ─┐
-Windows host: Desktop Duplication -> ffmpeg NVENC/AMF/QSV HEVC ─┤  one wire protocol
-                                                                ├──────────►  iPhone / iPad
-        Wi-Fi / Ethernet : UDP (Bonjour / mDNS discovery)       │             AVSampleBufferDisplayLayer
+Mac host    : ScreenCaptureKit -> VideoToolbox HEVC (hardware) ─┐
+Windows host: Desktop Duplication -> ffmpeg NVENC/AMF/QSV HEVC ─┤  one encrypted wire protocol
+Linux host  : X11 capture -> ffmpeg VAAPI/NVENC/x265 HEVC ──────┤──────────►  iPhone / iPad
+        Wi-Fi / Ethernet : UDP (Bonjour/mDNS + subnet scan)     │             AVSampleBufferDisplayLayer
         Cable            : USB tunnel via usbmuxd (TCP)         │             (hardware HEVC decode)
-                                                                │             -> iPad screen AND external monitor
-Input (mouse, keyboard, touch) goes back the same way ◄─────────┘
+Input (mouse, keyboard, touch) and audio ◄──────────────────────┘             -> iPad screen AND external monitor
 ```
 
 ## Downloads (Releases tab)
@@ -19,52 +18,106 @@ Input (mouse, keyboard, touch) goes back the same way ◄───────�
 | File | For |
 |---|---|
 | `Lumen-iOS.ipa` | iPhone / iPad (unsigned: install with AltStore, Sideloadly, or re-sign it yourself) |
-| `Lumen-Host-macOS.dmg` | Mac host |
-| `Lumen-Host-Windows.zip` | Windows host (includes `ffmpeg.exe`) |
+| `Lumen-Host-macOS.dmg` | Mac host: open it and drag **Lumen Host** onto **Applications** |
+| `Lumen-Host-Setup.exe` | Windows host installer (includes ffmpeg, optional desktop shortcut, firewall rules) |
+| `Lumen-Host-Windows.zip` | Windows host, portable |
+| `lumenhost_*_amd64.deb` / `_arm64.deb` | Debian, Ubuntu, Mint, Pop!_OS … |
+| `lumenhost-*.pkg.tar.zst` | Arch Linux / Manjaro (`sudo pacman -U file`) |
+| `Lumen-Host-*.AppImage` | Any Linux distro, ffmpeg included |
+| `Lumen-Host.flatpak` | Flatpak (best effort, see below) |
 
 ## Quick start
 
 1. **Host**
-   - **Mac:** drag `LumenHost.app` to Applications, right-click → Open the first time, allow **Screen Recording** and
-     **Accessibility**, quit and reopen, press **Start**.
-   - **Windows:** unzip, run `LumenHost.exe`, pick the display, press **Start**. Allow it through Windows Firewall when asked
-     (private networks). Needs an NVIDIA, AMD or Intel GPU with hardware HEVC encoding.
-2. **iPhone/iPad:** open Lumen. The host appears under *Macs on your network* (Wi-Fi), or just plug in the cable.
+   - **Mac:** open the `.dmg`, drag *Lumen Host* to *Applications*, right-click → Open the first time, allow
+     **Screen Recording** and **Accessibility**, quit and reopen, press **Start**.
+   - **Windows:** run `Lumen-Host-Setup.exe` (tick *Create a desktop shortcut* if you want one), start *Lumen Host*, press **Start**.
+     The installer opens the firewall for the app. Needs a GPU with hardware HEVC encoding, or it falls back to the CPU.
+   - **Linux (X11):** install the package, then run `lumenhost` in a terminal (or start *Lumen Host* from the app menu).
+     It prints your IP addresses and the pairing code. Run `lumenhost --check` if something does not work.
+2. **iPhone/iPad:** open Lumen. The computer appears under *Computers on your network* (Mac, Windows or Linux), or plug in the cable.
+3. The first time you connect to a computer the app asks for its **pairing code** (shown in the host window or terminal). It is
+   remembered in the iOS keychain.
+
+### Finding the computer
+The host window shows **Your IP address**. If the computer is not listed, type that address into *Connect by IP address*.
+The app lists computers with both Bonjour and a direct scan of your subnet, so it still works on networks where multicast is blocked.
 
 ### Wi-Fi / Ethernet
 Same network as the host. 5 GHz Wi-Fi or wired Ethernet (USB-C Ethernet adapter on the iPad) is best.
-If discovery fails, type the host's IP address in *Connect by IP address*.
 
 ### Cable (USB)
 Plug the iPhone/iPad into the computer, tap **Trust** on the device, start the host, and keep the Lumen app open.
 It connects automatically within a couple of seconds. Cable mode has no packet loss and the lowest latency.
-- **Mac:** nothing to install.
+- **Mac / Linux:** nothing to install (Linux needs `usbmuxd`, which most distros ship).
 - **Windows:** needs Apple's USB driver service. Install **iTunes** or the **Apple Devices** app from the Microsoft Store.
 - Cable auto-connect only starts while the iOS app is idle. If you tap *Disconnect* during a cable session, auto-connect
   pauses until you tap *Resume cable auto-connect*.
+
+## Touch: touchpad and touchscreen mode
+Pick the mode on the connect screen or in the stream menu.
+
+| | Touchpad | Touchscreen |
+|---|---|---|
+| Move | drag = relative cursor | the cursor is wherever you touch |
+| Left click | 1-finger tap | 1-finger tap |
+| Right click | 2-finger tap | 2-finger tap |
+| Scroll | 2-finger drag | 1-finger drag |
+| Drag | tap, then touch and drag | long-press, then drag (Mac host) / just drag items (Windows, Linux) |
+
+On **Windows and Linux hosts** touchscreen mode is *native*: the computer receives real multi-touch events (you see touch
+feedback, apps get touch input, pinch-zoom works) instead of a mouse pretending to be a finger. macOS has no public API for
+synthetic touch, so on a Mac host touchscreen mode is emulated with mouse input and the same gestures.
+
+## Encryption
+All video, audio, input and control traffic is encrypted end to end (AES-256-GCM, keys from an ECDH P-256 exchange mixed with
+the pairing code). Someone on your network without the code can neither watch nor control your computer. Use **New code**
+in the host window (or `lumenhost --new-code`) to change the code. Only discovery packets (name and platform of the computer) are unencrypted.
+Details: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+
+## Audio
+System audio is streamed to the iPad (mute from the stream menu). Mac: ScreenCaptureKit, Windows: WASAPI loopback, Linux:
+PulseAudio/PipeWire default output monitor.
+
+## Mirror or Extend
+Two buttons, in the iPad app (connect screen and stream menu) and in the host window:
+- **Mirror** shows the display chosen on the host.
+- **Extend** makes the iPad an additional screen. **Mac:** a virtual display is created automatically (uses a private macOS API;
+  if macOS refuses, the app tells you and mirrors instead). **Windows:** streams an additional display if one exists; Windows
+  cannot create a virtual one without a driver such as [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver),
+  install one and Extend uses it. **Linux:** streams a second monitor (or a dummy/virtual xrandr output) if one exists.
+The most recent choice, from the iPad or from the host, wins.
 
 ## External monitor
 Plug a monitor into the iPhone/iPad (USB-C to HDMI/DisplayPort). Lumen takes over the monitor as an extended display and
 renders the stream there at the monitor's native resolution (up to 4K). Connect *after* plugging the monitor in so the
 resolution is negotiated for it.
 
-## Games
+## Pointer lock for games
 Use an iPad with a mouse and keyboard. In the stream view open the ⋯ menu → **Capture mouse for games**, or press
-**Ctrl + Option + L**. Mouse movement is sent as raw deltas, which is what Minecraft and Roblox mouse-lock expect. Press the
-same shortcut to release. Without a mouse, a one-finger drag acts as a trackpad / camera stick while capture is on.
-On Windows, keys are injected as hardware scancodes so games see them like a real keyboard.
+**Ctrl + Option + L**. Mouse movement is sent as raw deltas, which is what games that lock the mouse to the window expect.
+Press the same shortcut to release. Without a mouse, a one-finger drag acts as a trackpad / camera stick while capture is on.
+On Windows and Linux, keys are injected as hardware scancodes / evdev keys so games see them like a real keyboard.
 
-## Extended desktop (second screen)
-Lumen streams a display that already exists on the host. To get an *extra* desktop instead of a mirror, create a virtual
-display: [DeskPad](https://github.com/Stengo/DeskPad) or BetterDisplay on Mac, a virtual display driver on Windows, then
-choose it in the host's display picker.
+## Linux notes
+- **Needs an X11 session.** Wayland desktops block screen capture by other programs; choose *GNOME on Xorg* / *Plasma (X11)* at login.
+  `lumenhost --check` tells you which one you have.
+- Input uses `/dev/uinput`. The packages install a udev rule and load the module; **add yourself to the `input` group**
+  (`sudo usermod -aG input $USER`) and log in again. `lumenhost --check` verifies it.
+- Encoders: VAAPI (Intel/AMD GPUs), NVENC (NVIDIA), or CPU x265, picked automatically; override with `--encoder vaapi|nvenc|software`.
+- Run as a background service: `systemctl --user enable --now lumenhost`.
+- **Flatpak** is best effort: the sandbox has no `xrandr`/`xdpyinfo` and needs `--device=all` for uinput and the GPU, so the
+  deb, Arch package or AppImage are the recommended ways.
+- Options: `lumenhost --help`.
 
 ## Tuning
 - Frame rate and bitrate are on the connect screen. 40 Mbps at 60 fps suits 1080p/1440p on good Wi-Fi; use more over cable.
-- Mac host: lost packets trigger an immediate keyframe request. Windows host: ffmpeg cannot emit a keyframe on demand, so it
+- Mac host: lost packets trigger an immediate keyframe request. Windows/Linux hosts: ffmpeg cannot emit a keyframe on demand, so it
   sends one every second and recovery after a loss takes up to 1 s (not an issue over cable).
-- If the mouse Y axis or scroll direction feels inverted, change `invertY` / `scrollScale` in `Client/InputCapture.swift`.
-- Windows multi-monitor: if the wrong screen is captured, change *Capture output index* in the host window.
+- Windows picks the best encoder automatically (NVIDIA NVENC, AMD AMF, Intel Quick Sync, then CPU) and falls back through
+  several capture methods if one fails. If something still fails, the error is shown on the iPad and in the host window;
+  the log is at `%LOCALAPPDATA%\Lumen\host.log` (*Open log file* in the host window).
+- Multi-monitor: choose the display in the host window. There is no "output index" to enter anymore, it is detected automatically.
 
 ## Build locally
 
@@ -76,24 +129,28 @@ open Lumen.xcodeproj
 
 # Windows host (needs .NET 8 SDK; put ffmpeg.exe next to the built exe)
 dotnet run --project HostWindows
+
+# Linux host (needs .NET 8 SDK and ffmpeg)
+dotnet run --project HostLinux -- --check
 ```
 
-Pushing to `main` runs `.github/workflows/release.yml`, which builds all three apps and publishes a normal
-(non-pre-release) GitHub Release with `Lumen-iOS.ipa`, `Lumen-Host-macOS.dmg` and `Lumen-Host-Windows.zip`.
-If the release step fails with a permissions error, enable *Settings → Actions → General → Workflow permissions →
-Read and write*.
+Pushing to `main` runs `.github/workflows/release.yml`, which builds everything and publishes a normal
+(non-pre-release) GitHub Release. If the release step fails with a permissions error, enable
+*Settings → Actions → General → Workflow permissions → Read and write*. A failing Linux package never blocks the other downloads.
 
 ## Layout
 
 ```
-Shared/         wire protocol (Swift)             HostWindows/Protocol.cs    same protocol (C#)
-Host/           macOS host                        HostWindows/               Windows host
-Client/         iOS / iPadOS app
+Shared/        wire protocol + crypto (Swift)     HostCommon/   protocol, crypto, server, ffmpeg pipeline (C#, shared)
+Host/          macOS host                         HostWindows/  Windows host + installer
+Client/        iOS / iPadOS app                   HostLinux/    Linux host
+packaging/     deb, Arch, AppImage, Flatpak       docs/         protocol description
 ```
 
 ## Known limits
-- One client at a time; video only (no audio yet); no encryption, so use it on a trusted network or over the cable.
+- One client at a time.
 - The host's mouse cursor is drawn into the video as well as the iPad pointer.
 - iPhone has limited hardware-mouse support in iOS; mouse capture works best on iPadOS.
-- The Windows host bundles an LGPL build of ffmpeg from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds);
-  its license text ships alongside it.
+- Linux: X11 only. Windows Extend needs a virtual display driver. Mac Extend uses a private API that Apple could change.
+- The Windows installer bundles a GPL build of ffmpeg from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
+  (for the CPU fallback); its license text ships alongside it.
