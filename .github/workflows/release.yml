@@ -146,7 +146,7 @@ jobs:
       - name: Bundle ffmpeg (LGPL build with NVENC / AMF / Quick Sync)
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip" -OutFile ffmpeg.zip
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg
           $root = (Get-ChildItem ffmpeg -Directory | Select-Object -First 1).FullName
           Copy-Item "$root/bin/ffmpeg.exe" dist/win/ffmpeg.exe
@@ -158,8 +158,10 @@ jobs:
           foreach ($f in @('dist/win/LumenHost.exe', 'dist/win/ffmpeg.exe')) {
             if (-not (Test-Path $f)) { Write-Error "missing $f"; exit 1 }
           }
-          & dist/win/ffmpeg.exe -version | Select-Object -First 1
+          $v = & dist/win/ffmpeg.exe -version
           if ($LASTEXITCODE -ne 0) { Write-Error "ffmpeg.exe does not run"; exit 1 }
+          $v | Select-Object -First 1
+          if (-not ($v -match 'libx265')) { Write-Warning "this ffmpeg build has no libx265 (software HEVC fallback)" }
           Get-ChildItem dist/win | Format-Table Name, Length
 
       - name: Zip (portable)

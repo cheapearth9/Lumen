@@ -52,6 +52,9 @@ final class InputInjector {
         case .button(let b, let down):
             button(b, down: down)
 
+        case .touch:
+            break   // macOS has no public API for synthetic touch events; the iPad app emulates touch with mouse input for Mac hosts
+
         case .scroll(let dx, let dy):
             guard let ev = CGEvent(scrollWheelEvent2Source: src, units: .pixel, wheelCount: 2,
                                    wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) else { return }
