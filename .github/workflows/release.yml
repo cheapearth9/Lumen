@@ -161,13 +161,12 @@ jobs:
           $h = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "lumen-ci" }
           $rel = Invoke-RestMethod "https://api.github.com/repos/ClassicOldSong/Apollo/releases/latest" -Headers $h
           Write-Host "Apollo release $($rel.tag_name):"; $rel.assets | ForEach-Object { Write-Host "  $($_.name)" }
-          $asset = $rel.assets | Where-Object { $_.name -match 'windows' -and $_.name -match 'AMD64|x64' -and $_.name -match '\.zip$' } | Select-Object -First 1
-          if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -match 'windows' -and $_.name -match 'AMD64|x64' -and $_.name -match '\.exe$' } | Select-Object -First 1 }
+          $asset = $rel.assets | Where-Object { $_.name -match '\.exe$' -and $_.name -notmatch 'arm|debug|portable' } | Select-Object -First 1
           if (-not $asset) { throw "no Windows asset found in the Apollo release" }
           Write-Host "using $($asset.name)"
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile apollo.bin -Headers $h
           New-Item -ItemType Directory -Force apollo_x | Out-Null
-          if ($asset.name -match '\.zip$') { Expand-Archive apollo.bin -DestinationPath apollo_x -Force } else { 7z x apollo.bin -oapollo_x -y | Out-Null }
+          if ($asset.name -match '\.zip$') { Expand-Archive apollo.bin -DestinationPath apollo_x -Force } else { 7z x apollo.bin -oapollo_x -y | Select-Object -Last 3 }
           $inf = Get-ChildItem apollo_x -Recurse -Filter SudoVDA.inf | Select-Object -First 1
           if (-not $inf) { throw "SudoVDA.inf not found in the Apollo package" }
           $dir = $inf.Directory.FullName
