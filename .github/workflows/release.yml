@@ -34,12 +34,20 @@ jobs:
 
   apple:
     name: iOS .ipa + macOS host
+    needs: version
+    env:
+      LUMEN_VERSION: ${{ needs.version.outputs.v }}
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Stamp version into project (becomes CFBundleShortVersionString / CFBundleVersion in Info.plist)
+        run: |
+          sed -i '' "s/MARKETING_VERSION: .*/MARKETING_VERSION: \"$LUMEN_VERSION\"/; s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: \"${{ github.run_number }}\"/" project.yml
+          grep -n "MARKETING_VERSION\|CURRENT_PROJECT_VERSION" project.yml
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -56,6 +64,13 @@ jobs:
             -derivedDataPath build/ios \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build
+
+      - name: Check version in built Info.plist
+        run: |
+          APP=$(find build/ios/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
+          v=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist")
+          echo "Info.plist version: $v"
+          [ "$v" = "$LUMEN_VERSION" ] || { echo "version mismatch ($v vs $LUMEN_VERSION)"; exit 1; }
 
       - name: Package .ipa
         run: |
