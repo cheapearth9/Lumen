@@ -152,6 +152,44 @@ jobs:
           Copy-Item "$root/bin/ffmpeg.exe" dist/win/ffmpeg.exe
           if (Test-Path "$root/LICENSE.txt") { Copy-Item "$root/LICENSE.txt" dist/win/FFMPEG-LICENSE.txt }
 
+      - name: Fetch SudoVDA virtual display driver (from Apollo's release)
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $h = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "lumen-ci" }
+          $rel = Invoke-RestMethod "https://api.github.com/repos/ClassicOldSong/Apollo/releases/latest" -Headers $h
+          Write-Host "Apollo release $($rel.tag_name):"; $rel.assets | ForEach-Object { Write-Host "  $($_.name)" }
+          $asset = $rel.assets | Where-Object { $_.name -match 'windows' -and $_.name -match 'AMD64|x64' -and $_.name -match '\.zip$' } | Select-Object -First 1
+          if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -match 'windows' -and $_.name -match 'AMD64|x64' -and $_.name -match '\.exe$' } | Select-Object -First 1 }
+          if (-not $asset) { throw "no Windows asset found in the Apollo release" }
+          Write-Host "using $($asset.name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile apollo.bin -Headers $h
+          New-Item -ItemType Directory -Force apollo_x | Out-Null
+          if ($asset.name -match '\.zip$') { Expand-Archive apollo.bin -DestinationPath apollo_x -Force } else { 7z x apollo.bin -oapollo_x -y | Out-Null }
+          $inf = Get-ChildItem apollo_x -Recurse -Filter SudoVDA.inf | Select-Object -First 1
+          if (-not $inf) { throw "SudoVDA.inf not found in the Apollo package" }
+          $dir = $inf.Directory.FullName
+          Write-Host "driver dir: $dir"; Get-ChildItem $dir | Format-Table Name, Length
+          if (-not (Test-Path "$dir/SudoVDA.dll")) { throw "SudoVDA.dll is not next to the INF" }
+          New-Item -ItemType Directory -Force dist/win/drivers/sudovda | Out-Null
+          Copy-Item "$dir/*" dist/win/drivers/sudovda -Recurse -Force
+          if (-not (Test-Path dist/win/drivers/sudovda/nefconc.exe)) {
+            $n = Get-ChildItem apollo_x -Recurse -Filter nefconc.exe | Select-Object -First 1
+            if ($n) { Copy-Item $n.FullName dist/win/drivers/sudovda/nefconc.exe }
+            else {
+              $nr = Invoke-RestMethod "https://api.github.com/repos/nefarius/nefcon/releases/latest" -Headers $h
+              $na = $nr.assets | Where-Object { $_.name -match '^nefcon.*\.zip$' } | Select-Object -First 1
+              Invoke-WebRequest -Uri $na.browser_download_url -OutFile nefcon.zip -Headers $h
+              Expand-Archive nefcon.zip -DestinationPath nefcon -Force
+              $x = Get-ChildItem nefcon -Recurse -Filter nefconc.exe | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+              if (-not $x) { $x = Get-ChildItem nefcon -Recurse -Filter nefconc.exe | Select-Object -First 1 }
+              Copy-Item $x.FullName dist/win/drivers/sudovda/nefconc.exe
+            }
+          }
+          Get-ChildItem dist/win/drivers/sudovda | Format-Table Name, Length
+
       - name: Verify bundled files
         shell: pwsh
         run: |

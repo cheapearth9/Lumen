@@ -83,9 +83,9 @@ PulseAudio/PipeWire default output monitor.
 Two buttons, in the iPad app (connect screen and stream menu) and in the host window:
 - **Mirror** shows the display chosen on the host.
 - **Extend** makes the iPad an additional screen. **Mac:** a virtual display is created automatically (uses a private macOS API;
-  if macOS refuses, the app tells you and mirrors instead). **Windows:** needs a second display. Windows cannot create one without a driver, so tick *Install the Virtual Display Driver* in the installer
-  (or press *Install virtual display* in the host window): it installs the open-source [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) with winget,
-  and Extend then uses it. **Linux:** streams a second monitor (or a dummy/virtual xrandr output) if one exists.
+  if macOS refuses, the app tells you and mirrors instead). **Windows:** uses the [SudoVDA](https://github.com/SudoMaker/SudoVDA) virtual display driver (the one Apollo uses): tick *Install the SudoVDA virtual display driver* in the installer
+  (or press *Install virtual display* in the host window; it adds the driver's certificate to Windows' trusted store, like Apollo does). Lumen then creates a monitor at exactly the iPad's resolution when you press Extend
+  and removes it afterwards. Without the driver, Extend uses any extra display that already exists. **Linux:** streams a second monitor (or a dummy/virtual xrandr output) if one exists.
 The most recent choice, from the iPad or from the host, wins.
 
 ## External monitor

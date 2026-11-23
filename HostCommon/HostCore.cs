@@ -23,6 +23,9 @@ public interface IPlatformHost
     /// Start capturing system audio; deliver 960-byte packets (240 frames, 48 kHz stereo s16le). Null if unsupported.
     IDisposable? StartAudio(Action<byte[]> packet) => null;
 
+    /// The session ended (or is restarting): release anything ApplyMode created, e.g. a virtual display.
+    void EndSession() { }
+
     /// Make the streamed display an extended desktop (extend = true) or the existing screen (false).
     /// Returns a note for the user when the request could not be honoured; `extended` says what is really active.
     string? ApplyMode(bool extend, int clientW, int clientH, out bool extended)
@@ -237,6 +240,7 @@ public sealed class HostCore : IDisposable
         _gotKey = false;
         try { _audio?.Dispose(); } catch { }
         _audio = null;
+        try { _p.EndSession(); } catch { }
         var ff = _ff;
         _ff = null;
         if (ff != null) { ff.Frame -= OnFrame; ff.Dispose(); }

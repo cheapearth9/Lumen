@@ -77,14 +77,19 @@ public sealed class MainForm : Form
         {
             try
             {
-                Process.Start(new ProcessStartInfo("powershell.exe",
-                    "-NoProfile -Command \"winget install --id=VirtualDrivers.Virtual-Display-Driver -e --silent --accept-package-agreements --accept-source-agreements; Read-Host 'Done. Press Enter to close'\"")
-                    { UseShellExecute = true, Verb = "runas" });
+                var bat = Path.Combine(AppContext.BaseDirectory, "drivers", "sudovda", "install.bat");
+                if (File.Exists(bat))
+                    Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"\"{bat}\" & pause\"") { UseShellExecute = true, Verb = "runas", WorkingDirectory = Path.GetDirectoryName(bat)! });
+                else
+                    Process.Start(new ProcessStartInfo("powershell.exe",
+                        "-NoProfile -Command \"winget install --id=VirtualDrivers.Virtual-Display-Driver -e --silent --accept-package-agreements --accept-source-agreements; Read-Host 'Done. Press Enter to close'\"")
+                        { UseShellExecute = true, Verb = "runas" });
                 _modeNote.Text = "Installing the virtual display driver… when it finishes, press Extend.";
                 vdd.Visible = false;
             }
-            catch { _modeNote.Text = "Could not start the installer (needs administrator rights and winget)."; }
+            catch { _modeNote.Text = "Could not start the installer (needs administrator rights)."; }
         };
+
         var ffmpegWarn = new Label
         {
             AutoSize = true, MaximumSize = new Size(400, 0), ForeColor = Color.Firebrick, Visible = !FfmpegUtil.Bundled,

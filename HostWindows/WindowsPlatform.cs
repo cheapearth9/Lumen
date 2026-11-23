@@ -22,10 +22,14 @@ public sealed class WindowsPlatform : IPlatformHost
     public IDisposable? StartAudio(Action<byte[]> packet) => new WindowsAudio(packet);
 
     private int? _effective;
+    private SudoVda? _vda;
+
+    public void EndSession() { _vda?.Dispose(); _vda = null; _effective = null; }
 
     /// True when the open-source Virtual Display Driver (or a compatible IddCx virtual monitor) is present.
     public static bool VirtualDisplayInstalled()
     {
+        if (SudoVda.Available()) return true;
         try
         {
             using var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\ROOT\DISPLAY");
@@ -40,7 +44,25 @@ public sealed class WindowsPlatform : IPlatformHost
     {
         extended = false;
         _effective = null;
+        _vda?.Dispose(); _vda = null;
         if (!extend) return null;
+
+        // Best case: SudoVDA creates a monitor with exactly the iPad's resolution.
+        if (SudoVda.Available())
+        {
+            _vda = SudoVda.Create(Math.Max(640, clientW), Math.Max(480, clientH), 60, "Lumen");
+            if (_vda?.DeviceName is { } dn)
+            {
+                for (int i = 0; i < 20; i++)
+                {
+                    var scr = Screen.AllScreens;
+                    int idx = Array.FindIndex(scr, s => string.Equals(s.DeviceName, dn, StringComparison.OrdinalIgnoreCase));
+                    if (idx >= 0) { _effective = idx; extended = true; return null; }
+                    Thread.Sleep(150);
+                }
+            }
+            _vda?.Dispose(); _vda = null;
+        }
         var all = Screen.AllScreens;
         int second = Array.FindIndex(all, s => !s.Primary);
         if (second < 0 && VirtualDisplayInstalled())
@@ -57,7 +79,7 @@ public sealed class WindowsPlatform : IPlatformHost
         if (second >= 0) { _effective = second; extended = true; return null; }
         return VirtualDisplayInstalled()
             ? "Extend: Windows did not enable the virtual display, so the screen is mirrored."
-            : "Extend needs a second display. Click \"Install virtual display\" in the Lumen Host window (one-time), then try again. Mirroring for now.";
+            : "Extend needs a virtual display driver. Click \"Install virtual display\" in the Lumen Host window (one time), then try again. Mirroring for now.";
     }
     public string FfmpegPath => FfmpegUtil.FindExe();
 

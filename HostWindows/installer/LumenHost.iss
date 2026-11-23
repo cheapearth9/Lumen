@@ -40,7 +40,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
-Name: "vdd"; Description: "Install the Virtual Display Driver (needed for Extend mode; downloads with winget)"; GroupDescription: "Optional:"; Flags: unchecked
+Name: "vdd"; Description: "Install the SudoVDA virtual display driver (needed for Extend mode; adds the driver certificate to the trusted store)"; GroupDescription: "Optional:"; Flags: unchecked
 Name: "autostart"; Description: "Start Lumen Host with Windows"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
@@ -55,7 +55,7 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "LumenHost"; ValueData: """{app}\{#AppExe}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""winget install --id=VirtualDrivers.Virtual-Display-Driver -e --silent --accept-package-agreements --accept-source-agreements"""; Flags: runhidden waituntilterminated; StatusMsg: "Installing virtual display driver..."; Tasks: vdd
+Filename: "{cmd}"; Parameters: "/c ""{app}\drivers\sudovda\install.bat"""; WorkingDir: "{app}\drivers\sudovda"; Flags: runhidden waituntilterminated; StatusMsg: "Installing virtual display driver..."; Tasks: vdd; Check: DriverBundled
 ; Firewall rules (inbound UDP: 47900 = Lumen stream, 5353 = mDNS discovery). Delete first so reinstalls stay idempotent.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lumen Host UDP 47900"""; Flags: runhidden; StatusMsg: "Configuring firewall..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lumen Host UDP 5353"""; Flags: runhidden
@@ -66,3 +66,9 @@ Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait pos
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lumen Host UDP 47900"""; Flags: runhidden; RunOnceId: "FwDel47900"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lumen Host UDP 5353"""; Flags: runhidden; RunOnceId: "FwDel5353"
+
+[Code]
+function DriverBundled: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\drivers\sudovda\install.bat'));
+end;
