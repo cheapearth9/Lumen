@@ -13,6 +13,10 @@ public sealed class CaptureCandidate
     public string Name { get; init; } = "";
     /// Builds the complete ffmpeg argument list for a given loopback RTP port.
     public Func<int, List<string>> Args { get; init; } = _ => new();
+    /// Program to run instead of ffmpeg (e.g. the Wayland GStreamer helper). It must send RTP H.265 to the given loopback port.
+    public string? Exe { get; init; }
+    /// How long to wait for the first frame (a permission dialog may be on screen).
+    public int NoFrameSeconds { get; init; } = 8;
 }
 
 public static class HostLog
@@ -198,7 +202,7 @@ public sealed class FfmpegPipeline : IDisposable
         {
             if (_stopped) return;
             if (_index >= _cands.Count) { gen = -1; cand = null!; exe = ""; }
-            else { cand = _cands[_index]; gen = ++_gen; _gotFrame = false; _tail.Clear(); exe = _exe; }
+            else { cand = _cands[_index]; gen = ++_gen; _gotFrame = false; _tail.Clear(); exe = cand.Exe ?? _exe; }
         }
         if (gen < 0) { Failed?.Invoke("No working capture/encoder combination was found."); return; }
 
@@ -236,7 +240,7 @@ public sealed class FfmpegPipeline : IDisposable
             {
                 if (_stopped || gen != _gen) { try { p.Kill(true); } catch { } sock.Close(); return; }
                 _proc = p; _rtp = sock;
-                _noFrame = new System.Threading.Timer(_ => Advance(gen, "no video within 8 seconds"), null, 8000, Timeout.Infinite);
+                _noFrame = new System.Threading.Timer(_ => Advance(gen, $"no video within {cand.NoFrameSeconds} seconds"), null, cand.NoFrameSeconds * 1000, Timeout.Infinite);
             }
             p.EnableRaisingEvents = true;
             p.Exited += (_, _) =>

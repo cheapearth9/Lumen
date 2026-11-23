@@ -173,10 +173,84 @@ public sealed class LinuxPlatform : IPlatformHost
         return a;
     }
 
+    // MARK: Wayland (xdg-desktop-portal ScreenCast + PipeWire + GStreamer)
+
+    private static bool HasGst(string element) => Run("gst-inspect-1.0", "--exists " + element) != null && ExitOk("gst-inspect-1.0", "--exists " + element);
+
+    private static bool ExitOk(string exe, string args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(exe, args) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            using var p = Process.Start(psi);
+            if (p == null) return false;
+            p.StandardOutput.ReadToEnd();
+            if (!p.WaitForExit(4000)) { try { p.Kill(); } catch { } return false; }
+            return p.ExitCode == 0;
+        }
+        catch { return false; }
+    }
+
+    /// Things the Wayland path needs; empty list = ready.
+    public static List<string> WaylandProblems()
+    {
+        var m = new List<string>();
+        if (!ExitOk("python3", "-c \"import gi; from gi.repository import Gio\"")) m.Add("python3-gi (Debian/Ubuntu: python3-gi, Arch: python-gobject)");
+        if (!ExitOk("gst-inspect-1.0", "--exists pipewiresrc")) m.Add("GStreamer PipeWire plugin (Debian/Ubuntu: gstreamer1.0-pipewire, Arch: gst-plugin-pipewire)");
+        if (!ExitOk("gst-inspect-1.0", "--exists rtph265pay")) m.Add("GStreamer RTP plugins (gstreamer1.0-plugins-good)");
+        if (!ExitOk("gst-inspect-1.0", "--exists x265enc") && !ExitOk("gst-inspect-1.0", "--exists vah265enc") &&
+            !ExitOk("gst-inspect-1.0", "--exists vaapih265enc") && !ExitOk("gst-inspect-1.0", "--exists nvh265enc"))
+            m.Add("a GStreamer HEVC encoder (gstreamer1.0-plugins-bad provides x265enc and vah265enc)");
+        return m;
+    }
+
+    private static string WriteHelper()
+    {
+        var dir = Path.Combine(Environment.GetEnvironmentVariable("XDG_CACHE_HOME") is { Length: > 0 } c ? c
+                  : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache"), "lumen");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "wayland-capture.py");
+        using var res = typeof(LinuxPlatform).Assembly.GetManifestResourceStream("wayland-capture.py")!;
+        using var fs = File.Create(path);
+        res.CopyTo(fs);
+        return path;
+    }
+
+    private List<CaptureCandidate> BuildWaylandCandidates(int w, int h, int fps, int bps, Action<string> status)
+    {
+        var problems = WaylandProblems();
+        if (problems.Count > 0)
+        {
+            status("Wayland capture needs: " + string.Join("; ", problems));
+            HostLog.Write("wayland: missing " + string.Join("; ", problems));
+            return new();
+        }
+        status("Wayland: your desktop may ask which screen to share. Allow it once.");
+        var script = WriteHelper();
+        var encs = new List<(string Id, string Label)>();
+        if (Encoder != LinuxEncoder.Software)
+        {
+            if (Encoder is LinuxEncoder.Auto or LinuxEncoder.Nvenc && HasGst("nvh265enc")) encs.Add(("nvenc", "NVIDIA NVENC"));
+            if (Encoder is LinuxEncoder.Auto or LinuxEncoder.Vaapi)
+            {
+                if (HasGst("vah265enc")) encs.Add(("va", "VA-API"));
+                else if (HasGst("vaapih265enc")) encs.Add(("vaapi", "VA-API"));
+            }
+        }
+        if (HasGst("x265enc")) encs.Add(("x265", "CPU (x265)"));
+        int kbps = bps / 1000;
+        return encs.Select(e => new CaptureCandidate
+        {
+            Name = e.Label + " + Wayland screen share",
+            Exe = "python3",
+            NoFrameSeconds = 90,
+            Args = port => new List<string> { script, port.ToString(), w.ToString(), h.ToString(), fps.ToString(), kbps.ToString(), e.Id }
+        }).ToList();
+    }
+
     public async Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bps, bool needScale, Action<string> status)
     {
-        if (IsWayland)
-            status("Wayland session detected: screen capture needs an X11 session (log in with 'GNOME on Xorg' / 'Plasma (X11)').");
+        if (IsWayland) return BuildWaylandCandidates(w, h, fps, bps, status);
         var available = await DetectAsync(FfmpegPath, status);
         var kinds = new List<LinuxEncoder>();
         if (Encoder == LinuxEncoder.Auto) kinds.AddRange(available);
@@ -199,7 +273,13 @@ public sealed class LinuxPlatform : IPlatformHost
         void Line(bool ok, string text) { Console.WriteLine((ok ? "  ok   " : "  FAIL ") + text); if (!ok) problems++; }
 
         Line(File.Exists(FfmpegPath) || Run(FfmpegPath, "-version") != null, "ffmpeg: " + FfmpegPath);
-        Line(!IsWayland, IsWayland ? "session is Wayland: x11grab cannot capture it. Use an X11 session." : "X11 session (" + Display + ")");
+        if (IsWayland)
+        {
+            var wp = WaylandProblems();
+            Line(wp.Count == 0, wp.Count == 0 ? "Wayland session: capture through the desktop's screen-share portal (PipeWire + GStreamer)"
+                : "Wayland session, missing: " + string.Join("; ", wp));
+        }
+        else Console.WriteLine("  ok   X11 session (" + Display + ")");
         var (w, h) = SourceSize;
         Console.WriteLine($"  info screen size {w}x{h}");
         bool uinput = File.Exists("/dev/uinput");

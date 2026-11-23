@@ -72,6 +72,19 @@ public sealed class MainForm : Form
         _s.ModeChanged += ex => Ui(() => ShowMode(ex));
         ShowMode(false);
         var hint = _modeNote;
+        var vdd = new Button { Text = "Install virtual display (for Extend)", AutoSize = true, Visible = !WindowsPlatform.VirtualDisplayInstalled() };
+        vdd.Click += (_, _) =>
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo("powershell.exe",
+                    "-NoProfile -Command \"winget install --id=VirtualDrivers.Virtual-Display-Driver -e --silent --accept-package-agreements --accept-source-agreements; Read-Host 'Done. Press Enter to close'\"")
+                    { UseShellExecute = true, Verb = "runas" });
+                _modeNote.Text = "Installing the virtual display driver… when it finishes, press Extend.";
+                vdd.Visible = false;
+            }
+            catch { _modeNote.Text = "Could not start the installer (needs administrator rights and winget)."; }
+        };
         var ffmpegWarn = new Label
         {
             AutoSize = true, MaximumSize = new Size(400, 0), ForeColor = Color.Firebrick, Visible = !FfmpegUtil.Bundled,
@@ -101,6 +114,7 @@ public sealed class MainForm : Form
         panel.Controls.Add(codeRow);
         panel.Controls.Add(new Label { Text = "Screen mode", AutoSize = true, Margin = new Padding(0, 12, 0, 2) });
         panel.Controls.Add(modeRow);
+        panel.Controls.Add(vdd);
         panel.Controls.Add(new Label { Text = "Display to stream", AutoSize = true, Margin = new Padding(0, 12, 0, 2) });
         panel.Controls.Add(_display);
         panel.Controls.Add(new Label { Text = "Video encoder", AutoSize = true, Margin = new Padding(0, 12, 0, 2) });

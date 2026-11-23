@@ -29,12 +29,12 @@ Architecture: ${arch}
 Installed-Size: ${installed_size}
 Maintainer: Lumen <noreply@users.noreply.github.com>
 Depends: libc6, libstdc++6, ffmpeg, x11-utils, x11-xserver-utils
-Recommends: pulseaudio-utils | pipewire-pulse
+Recommends: pulseaudio-utils | pipewire-pulse, python3-gi, gstreamer1.0-pipewire, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad
 Homepage: https://github.com/cheapearth9/Lumen
 Description: Lumen Host - stream this screen to an iPhone or iPad
  Lumen Host captures the X11 screen with ffmpeg and streams it to the
  Lumen app over USB or the local network, with remote mouse and keyboard
- input via /dev/uinput. X11 sessions only (not Wayland).
+ input via /dev/uinput. Works on Wayland (screen-share portal) and X11.
 CTL
 echo "/etc/modules-load.d/lumen.conf" > "$root/DEBIAN/conffiles"
 echo "/etc/udev/rules.d/60-lumen-uinput.rules" >> "$root/DEBIAN/conffiles"

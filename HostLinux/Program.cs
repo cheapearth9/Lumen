@@ -5,7 +5,7 @@ namespace Lumen;
 internal static class Program
 {
     private const string Help = """
-        lumenhost - stream this Linux desktop (X11) to the Lumen iPhone/iPad app
+        lumenhost - stream this Linux desktop (Wayland or X11) to the Lumen iPhone/iPad app
 
         usage: lumenhost [options]
           --name NAME        name shown in the iPad app (default: host name)
@@ -66,7 +66,7 @@ internal static class Program
         Console.WriteLine("Lumen Host - " + name);
         foreach (var (iface, addr) in LocalNet.Ipv4()) Console.WriteLine($"  IP address: {addr}  ({iface})");
         Console.WriteLine("  Pairing code (type it into the app once): " + PairingCode.Format(core.PairingKey));
-        if (LinuxPlatform.IsWayland) Console.WriteLine("  Warning: Wayland session - capture needs X11. Run 'lumenhost --check'.");
+        if (LinuxPlatform.IsWayland) Console.WriteLine("  Wayland session: your desktop will ask once which screen to share. Run 'lumenhost --check' if capture fails.");
         Console.WriteLine("Press Ctrl+C to stop.");
 
         await done.Task;

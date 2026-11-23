@@ -83,9 +83,9 @@ PulseAudio/PipeWire default output monitor.
 Two buttons, in the iPad app (connect screen and stream menu) and in the host window:
 - **Mirror** shows the display chosen on the host.
 - **Extend** makes the iPad an additional screen. **Mac:** a virtual display is created automatically (uses a private macOS API;
-  if macOS refuses, the app tells you and mirrors instead). **Windows:** streams an additional display if one exists; Windows
-  cannot create a virtual one without a driver such as [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver),
-  install one and Extend uses it. **Linux:** streams a second monitor (or a dummy/virtual xrandr output) if one exists.
+  if macOS refuses, the app tells you and mirrors instead). **Windows:** needs a second display. Windows cannot create one without a driver, so tick *Install the Virtual Display Driver* in the installer
+  (or press *Install virtual display* in the host window): it installs the open-source [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) with winget,
+  and Extend then uses it. **Linux:** streams a second monitor (or a dummy/virtual xrandr output) if one exists.
 The most recent choice, from the iPad or from the host, wins.
 
 ## External monitor
@@ -100,8 +100,9 @@ Press the same shortcut to release. Without a mouse, a one-finger drag acts as a
 On Windows and Linux, keys are injected as hardware scancodes / evdev keys so games see them like a real keyboard.
 
 ## Linux notes
-- **Needs an X11 session.** Wayland desktops block screen capture by other programs; choose *GNOME on Xorg* / *Plasma (X11)* at login.
-  `lumenhost --check` tells you which one you have.
+- **Wayland and X11 both work.** On Wayland the desktop asks once which screen to share (screen-share portal, remembered afterwards)
+  and capture goes through PipeWire + GStreamer: install `python3-gi`, `gstreamer1.0-pipewire` and `gstreamer1.0-plugins-bad` (the deb recommends them).
+  `lumenhost --check` lists anything missing. X11 uses ffmpeg directly. On Wayland the screen size comes from XWayland; pass `--size WxH` if it is wrong.
 - Input uses `/dev/uinput`. The packages install a udev rule and load the module; **add yourself to the `input` group**
   (`sudo usermod -aG input $USER`) and log in again. `lumenhost --check` verifies it.
 - Encoders: VAAPI (Intel/AMD GPUs), NVENC (NVIDIA), or CPU x265, picked automatically; override with `--encoder vaapi|nvenc|software`.
@@ -151,6 +152,6 @@ packaging/     deb, Arch, AppImage, Flatpak       docs/         protocol descrip
 - One client at a time.
 - The host's mouse cursor is drawn into the video as well as the iPad pointer.
 - iPhone has limited hardware-mouse support in iOS; mouse capture works best on iPadOS.
-- Linux: X11 only. Windows Extend needs a virtual display driver. Mac Extend uses a private API that Apple could change.
+- Linux Wayland capture needs the GStreamer/PipeWire packages and is the least-tested path. Windows Extend needs the virtual display driver. Mac Extend uses a private API that Apple could change.
 - The Windows installer bundles a GPL build of ffmpeg from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
   (for the CPU fallback); its license text ships alongside it.

@@ -23,6 +23,18 @@ public sealed class WindowsPlatform : IPlatformHost
 
     private int? _effective;
 
+    /// True when the open-source Virtual Display Driver (or a compatible IddCx virtual monitor) is present.
+    public static bool VirtualDisplayInstalled()
+    {
+        try
+        {
+            using var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\ROOT\DISPLAY");
+            if (k != null && k.GetSubKeyNames().Length > 0) return true;
+            return Directory.Exists(@"C:\VirtualDisplayDriver");
+        }
+        catch { return false; }
+    }
+
     /// Extend = stream an additional display if one exists (e.g. a virtual display driver or an unused monitor); otherwise mirror.
     public string? ApplyMode(bool extend, int clientW, int clientH, out bool extended)
     {
@@ -31,8 +43,21 @@ public sealed class WindowsPlatform : IPlatformHost
         if (!extend) return null;
         var all = Screen.AllScreens;
         int second = Array.FindIndex(all, s => !s.Primary);
+        if (second < 0 && VirtualDisplayInstalled())
+        {
+            // The virtual monitor exists but may be switched off or duplicated: ask Windows for "extend".
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("displayswitch.exe", "/extend") { UseShellExecute = false, CreateNoWindow = true })?.WaitForExit(4000); } catch { }
+            for (int i = 0; i < 12 && second < 0; i++)
+            {
+                Thread.Sleep(250);
+                all = Screen.AllScreens;
+                second = Array.FindIndex(all, s => !s.Primary);
+            }
+        }
         if (second >= 0) { _effective = second; extended = true; return null; }
-        return "Extend needs a second (virtual) display. Windows cannot create one without a driver, so the screen is mirrored. Install a virtual display driver such as Virtual Display Driver, then try again.";
+        return VirtualDisplayInstalled()
+            ? "Extend: Windows did not enable the virtual display, so the screen is mirrored."
+            : "Extend needs a second display. Click \"Install virtual display\" in the Lumen Host window (one-time), then try again. Mirroring for now.";
     }
     public string FfmpegPath => FfmpegUtil.FindExe();
 
