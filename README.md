@@ -72,7 +72,7 @@ synthetic touch, so on a Mac host touchscreen mode is emulated with mouse input 
 ## Encryption
 All video, audio, input and control traffic is encrypted end to end (AES-256-GCM, keys from an ECDH P-256 exchange mixed with
 the pairing code). Someone on your network without the code can neither watch nor control your computer. Use **New code**
-in the host window (or `lumenhost --new-code`) to change the code. Only discovery packets (name and platform of the computer) are unencrypted.
+in the host window (or `lumenhost --new-code`) to change the code. The pairing code is a 5-digit PIN, so it is stretched with PBKDF2, but it is a convenience level of protection: someone who records your traffic could still guess it offline, so use *New code* if you suspect that. Only discovery packets (name and platform of the computer) are unencrypted.
 Details: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 ## Audio

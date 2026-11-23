@@ -37,10 +37,10 @@ Touch events are only sent when the host reported caps bit0 (native touch).
 
 ## Encryption
 Everything except discover / announce / handshake is encrypted. Unknown or unauthenticated packets are dropped silently.
-* **Pairing code**: 10 random bytes shown on the host as 16 base32 characters `ABCD-EFGH-IJKL-MNOP` (alphabet A-Z2-7). Typed once on the iOS app,
+* **Pairing code**: a random 5-digit PIN shown on the host; both sides stretch it with PBKDF2-HMAC-SHA256 (salt `lumen-pin-v1`, 200000 iterations, 32 bytes) because 5 digits is little entropy. Typed once on the iOS app,
   stored in the iOS Keychain per host. The host can regenerate it.
 * **Handshake** packets (type 11, `id` 0), payload `role u8 (0 client / 1 host), version u8 (=1), P-256 public key (65 bytes x9.63 uncompressed), nonce 16 bytes`.
-* **Keys**: `ikm = ECDH raw shared secret (32 bytes) || pairingKey (10 bytes)`, `salt = clientNonce || hostNonce`,
+* **Keys**: `ikm = ECDH raw shared secret (32 bytes) || stretched pairing key (32 bytes)`, `salt = clientNonce || hostNonce`,
   `c2s = HKDF-SHA256(ikm, salt, "lumen-v1 c2s", 32)`, `s2c = ... "lumen-v1 s2c"`. A peer without the pairing code derives different keys, so nothing it sends authenticates.
 * **Sealed packet**: `0x4C 0x45 | seq u64 BE | ciphertext | tag(16)`. AES-256-GCM, nonce = 4 zero bytes || seq, AAD = first 10 bytes. Plaintext = a normal Lumen packet (header included).
   Receivers drop replays (`ReplayWindow`). Over TCP the sealed packet is what gets length-prefixed.

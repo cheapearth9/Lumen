@@ -9,50 +9,21 @@ namespace Lumen;
 
 public static class PairingCode
 {
-    private const string Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-
-    public static byte[] Generate() => RandomNumberGenerator.GetBytes(10);
-
-    /// "ABCD-EFGH-IJKL-MNOP"
-    public static string Format(byte[] key)
+    /// A 5-digit PIN. The key bytes are the ASCII digits; SecureSession stretches them with PBKDF2 before use.
+    public static byte[] Generate()
     {
-        var sb = new StringBuilder();
-        uint buffer = 0;
-        int bits = 0;
-        foreach (var b in key)
-        {
-            buffer = (buffer << 8) | b;
-            bits += 8;
-            while (bits >= 5)
-            {
-                sb.Append(Alphabet[(int)((buffer >> (bits - 5)) & 31)]);
-                bits -= 5;
-            }
-        }
-        if (bits > 0) sb.Append(Alphabet[(int)((buffer << (5 - bits)) & 31)]);
-        var s = sb.ToString();
-        return string.Join("-", Enumerable.Range(0, (s.Length + 3) / 4).Select(i => s.Substring(i * 4, Math.Min(4, s.Length - i * 4))));
+        var d = new byte[5];
+        for (int i = 0; i < 5; i++) d[i] = (byte)('0' + RandomNumberGenerator.GetInt32(10));
+        return d;
     }
 
-    /// Accepts any case, with or without dashes / spaces. Null unless it is exactly 16 valid characters.
+    public static string Format(byte[] key) => Encoding.ASCII.GetString(key);
+
+    /// Accepts digits with any separators. Null unless exactly 5 digits.
     public static byte[]? Parse(string text)
     {
-        var chars = text.ToUpperInvariant().Where(c => Alphabet.Contains(c)).ToArray();
-        if (chars.Length != 16) return null;
-        var output = new List<byte>();
-        uint buffer = 0;
-        int bits = 0;
-        foreach (var c in chars)
-        {
-            buffer = (buffer << 5) | (uint)Alphabet.IndexOf(c);
-            bits += 5;
-            if (bits >= 8)
-            {
-                output.Add((byte)((buffer >> (bits - 8)) & 0xFF));
-                bits -= 8;
-            }
-        }
-        return output.Count == 10 ? output.ToArray() : null;
+        var digits = text.Where(char.IsAsciiDigit).ToArray();
+        return digits.Length == 5 ? Encoding.ASCII.GetBytes(digits) : null;
     }
 
     private static string FilePath
@@ -122,7 +93,21 @@ public sealed class SecureSession
 
     public bool IsReady { get; private set; }
 
-    private SecureSession(bool isClient, byte[] psk) { _isClient = isClient; _psk = psk; }
+    private static readonly Dictionary<string, byte[]> StretchCache = new();
+
+    /// A 5-digit PIN has little entropy, so it is stretched (PBKDF2-SHA256, 200k iterations) before it enters the key derivation.
+    private static byte[] Stretch(byte[] pin)
+    {
+        var k = Convert.ToHexString(pin);
+        lock (StretchCache)
+        {
+            if (StretchCache.TryGetValue(k, out var c)) return c;
+            var r = Rfc2898DeriveBytes.Pbkdf2(pin, Encoding.ASCII.GetBytes("lumen-pin-v1"), 200_000, HashAlgorithmName.SHA256, 32);
+            return StretchCache[k] = r;
+        }
+    }
+
+    private SecureSession(bool isClient, byte[] psk) { _isClient = isClient; _psk = Stretch(psk); }
 
     private byte[] PublicKey()
     {

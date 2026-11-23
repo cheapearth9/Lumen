@@ -1,15 +1,16 @@
 import Foundation
 import CryptoKit
 import Security
+import CommonCrypto
 
 // End-to-end encryption for the Lumen protocol. Must stay byte-compatible with HostCommon/Crypto.cs.
 //
-//  * Pairing code: 10 random bytes shown on the host as 16 base32 characters (ABCD-EFGH-IJKL-MNOP).
-//    The user types it into the iOS app once per host.
+//  * Pairing code: a random 5-digit PIN shown on the host. The user types it into the iOS app once per host.
+//    Both sides stretch it: psk = PBKDF2-HMAC-SHA256(pin ASCII, salt "lumen-pin-v1", 200000 iterations, 32 bytes).
 //  * Handshake (the only unencrypted packet type besides discover/announce), carried in PacketType.handshake:
 //        client -> host : [0 role][1 version][65 P-256 public key (x9.63)][16 client nonce]
 //        host -> client : [1 role][1 version][65 P-256 public key (x9.63)][16 server nonce]
-//  * Keys: ikm  = ECDH raw shared secret (32 bytes) || pairing key (10 bytes)
+//  * Keys: ikm  = ECDH raw shared secret (32 bytes) || stretched pairing key (32 bytes)
 //          salt = client nonce || server nonce
 //          c2s / s2c = HKDF-SHA256(ikm, salt, info "lumen-v1 c2s" / "lumen-v1 s2c") -> 32 bytes each
 //    A peer without the pairing code derives different keys, so nothing it sends authenticates.
@@ -17,53 +18,23 @@ import Security
 //    nonce = 4 zero bytes || seq (8 bytes BE), AAD = the first 10 bytes. The plaintext is a normal Lumen packet.
 
 enum PairingCode {
-    private static let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".utf8)
-
+    /// A 5-digit PIN. The key bytes are the ASCII digits; SecureSession stretches them with PBKDF2 before use.
     static func generate() -> Data {
-        var bytes = [UInt8](repeating: 0, count: 10)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        return Data(bytes)
-    }
-
-    /// "ABCD-EFGH-IJKL-MNOP"
-    static func format(_ key: Data) -> String {
         var out = [UInt8]()
-        var buffer: UInt32 = 0
-        var bits = 0
-        for b in key {
-            buffer = (buffer << 8) | UInt32(b)
-            bits += 8
-            while bits >= 5 {
-                out.append(alphabet[Int((buffer >> UInt32(bits - 5)) & 31)])
-                bits -= 5
-            }
+        for _ in 0..<5 {
+            var b: UInt8 = 0
+            repeat { _ = SecRandomCopyBytes(kSecRandomDefault, 1, &b) } while b >= 250   // unbiased 0-9
+            out.append(UInt8(ascii: "0") + b % 10)
         }
-        if bits > 0 { out.append(alphabet[Int((buffer << UInt32(5 - bits)) & 31)]) }
-        let s = String(decoding: out, as: UTF8.self)
-        return stride(from: 0, to: s.count, by: 4).map { i -> String in
-            let a = s.index(s.startIndex, offsetBy: i)
-            let b = s.index(a, offsetBy: min(4, s.count - i))
-            return String(s[a..<b])
-        }.joined(separator: "-")
+        return Data(out)
     }
 
-    /// Accepts any case, with or without dashes / spaces. Returns nil unless it is exactly 16 valid characters.
+    static func format(_ key: Data) -> String { String(decoding: key, as: UTF8.self) }
+
+    /// Accepts digits with any separators. Returns nil unless exactly 5 digits.
     static func parse(_ text: String) -> Data? {
-        let chars = text.uppercased().utf8.filter { alphabet.contains($0) }
-        guard chars.count == 16 else { return nil }
-        var out = [UInt8]()
-        var buffer: UInt32 = 0
-        var bits = 0
-        for c in chars {
-            guard let v = alphabet.firstIndex(of: c) else { return nil }
-            buffer = (buffer << 5) | UInt32(v)
-            bits += 5
-            if bits >= 8 {
-                out.append(UInt8((buffer >> UInt32(bits - 8)) & 0xFF))
-                bits -= 8
-            }
-        }
-        return out.count == 10 ? Data(out) : nil
+        let digits = text.utf8.filter { $0 >= 48 && $0 <= 57 }
+        return digits.count == 5 ? Data(digits) : nil
     }
 }
 
@@ -101,9 +72,26 @@ final class SecureSession {
 
     private(set) var isReady = false
 
+    private static var stretchCache = [Data: Data]()
+    private static let stretchLock = NSLock()
+
+    /// A 5-digit PIN has little entropy, so it is stretched (PBKDF2-SHA256, 200k iterations) before it enters the key derivation.
+    private static func stretch(_ pin: Data) -> Data {
+        stretchLock.lock(); defer { stretchLock.unlock() }
+        if let c = stretchCache[pin] { return c }
+        var out = [UInt8](repeating: 0, count: 32)
+        let salt = Array("lumen-pin-v1".utf8)
+        let pinBytes = [UInt8](pin)
+        _ = CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2), pinBytes.map { Int8(bitPattern: $0) }, pinBytes.count,
+                                 salt, salt.count, CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256), 200_000, &out, out.count)
+        let d = Data(out)
+        stretchCache[pin] = d
+        return d
+    }
+
     private init(isClient: Bool, psk: Data) {
         self.isClient = isClient
-        self.psk = psk
+        self.psk = SecureSession.stretch(psk)
         privateKey = P256.KeyAgreement.PrivateKey()
         var n = [UInt8](repeating: 0, count: 16)
         _ = SecRandomCopyBytes(kSecRandomDefault, n.count, &n)

@@ -5,15 +5,15 @@ enum PairingPrompt {
     /// `completion` receives the parsed key, or nil when the user cancels. Must be called on the main thread.
     static func present(host: String, note: String?, completion: @escaping (Data?) -> Void) {
         guard let top = topViewController(), !(top is UIAlertController) else { completion(nil); return }
-        var message = "Enter the 16-character pairing code shown by Lumen Host on \(host)."
+        var message = "Enter the 5-digit pairing code shown by Lumen Host on \(host)."
         if let note { message = note + "\n" + message }
         let alert = UIAlertController(title: "Pairing code", message: message, preferredStyle: .alert)
         alert.addTextField { tf in
-            tf.placeholder = "ABCD-EFGH-IJKL-MNOP"
-            tf.autocapitalizationType = .allCharacters
+            tf.placeholder = "12345"
+            tf.autocapitalizationType = .none
             tf.autocorrectionType = .no
             tf.spellCheckingType = .no
-            tf.keyboardType = .asciiCapable
+            tf.keyboardType = .numberPad
             tf.clearButtonMode = .whileEditing
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completion(nil) })
