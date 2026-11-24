@@ -21,7 +21,7 @@ docker run --rm -e LUMEN_PKGVER="$version" -v "$stage":/in:ro -v "$outdir":/out 
   pacman -Syu --noconfirm --needed base-devel ffmpeg xorg-xdpyinfo xorg-xrandr
   useradd -m builder
   mkdir /home/builder/pkg /home/builder/out && cp /in/* /home/builder/pkg/ && chown -R builder /home/builder
-  su builder -c "cd /home/builder/pkg && LUMEN_PKGVER=$LUMEN_PKGVER PKGDEST=/home/builder/out makepkg -f --noconfirm"
+  su builder -c "cd /home/builder/pkg && LUMEN_PKGVER=$LUMEN_PKGVER PKGDEST=/home/builder/out makepkg -f -d --noconfirm"
   cp /home/builder/out/*.pkg.tar.zst /out/
 '
 ls -la "$outdir"

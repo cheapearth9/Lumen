@@ -77,7 +77,8 @@ internal static class Program
         try { core.Start(cable); }
         catch (Exception ex) { Console.Error.WriteLine("Could not start: " + ex.Message); return 1; }
 
-        Console.WriteLine("Lumen Host - " + name);
+        Console.WriteLine("Lumen Host " + Updater.Current + " - " + name);
+        Console.WriteLine($"  Listening on UDP {Wire.UdpPort}" + (cable ? " and watching USB for iPhones/iPads (needs usbmuxd running)" : ""));
         foreach (var (iface, addr) in LocalNet.Ipv4()) Console.WriteLine($"  IP address: {addr}  ({iface})");
         Console.WriteLine($"  Paired devices: {core.Paired.All().Count}. A new iPhone/iPad shows a 5-digit code when it connects; type it here when asked.");
         if (LinuxPlatform.IsWayland) Console.WriteLine("  Wayland session: your desktop will ask once which screen to share. Run 'lumenhost --check' if capture fails.");
