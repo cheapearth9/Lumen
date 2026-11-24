@@ -38,8 +38,30 @@ public sealed class InputInjector
     private readonly object _lock = new();
     private readonly GamepadBridge _pads = new();
 
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool SystemParametersInfo(uint action, uint param, ref int value, uint winIni);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool SystemParametersInfo(uint action, uint param, IntPtr value, uint winIni);
+    private static bool? _vanishWas;
+
+    /// Windows hides the pointer while you type ("Hide pointer while typing"). Injected keystrokes trigger it, which
+    /// makes the cursor disappear in the stream, so switch it off while the host runs and restore it afterwards.
+    public static void DisablePointerVanish()
+    {
+        try
+        {
+            if (_vanishWas == null) { int cur = 0; if (SystemParametersInfo(0x1020, 0, ref cur, 0)) _vanishWas = cur != 0; }
+            if (_vanishWas == true) SystemParametersInfo(0x1021, 0, IntPtr.Zero, 0);   // SPI_SETMOUSEVANISH = off
+        }
+        catch { }
+    }
+
+    public static void RestorePointerVanish()
+    {
+        try { if (_vanishWas == true) SystemParametersInfo(0x1021, 0, (IntPtr)1, 0); } catch { }
+    }
+
     public void Configure(Rectangle monitor, Rectangle virtualScreen)
     {
+        DisablePointerVanish();
         lock (_lock) { _monitor = monitor; _virtual = virtualScreen; }
     }
 
@@ -84,6 +106,7 @@ public sealed class InputInjector
     /// Release everything that is still held (client disconnected) so nothing gets stuck.
     public void ReleaseAll()
     {
+        RestorePointerVanish();
         lock (_lock)
         {
             foreach (var b in _heldButtons.ToArray()) Button(b, false);
@@ -205,7 +228,7 @@ public sealed class InputInjector
         {
             if (key == id) continue;
             var other = _contacts[key];
-            other.pointerInfo.pointerFlags = INRANGE | INCONTACT | FIRSTBUTTON | UPDATE;
+            other.pointerInfo.pointerFlags = INRANGE | INCONTACT | UPDATE;
             _contacts[key] = other;
             frame.Add(other);
         }
@@ -213,10 +236,10 @@ public sealed class InputInjector
         POINTER_TOUCH_INFO me;
         switch (phase)
         {
-            case 0: me = MakeContact(id, px, py, INRANGE | INCONTACT | FIRSTBUTTON | NEW | DOWN); break;
+            case 0: me = MakeContact(id, px, py, INRANGE | INCONTACT | DOWN); break;
             case 1:
                 if (!_contacts.ContainsKey(id)) return;
-                me = MakeContact(id, px, py, INRANGE | INCONTACT | FIRSTBUTTON | UPDATE); break;
+                me = MakeContact(id, px, py, INRANGE | INCONTACT | UPDATE); break;
             default:
                 if (!_contacts.TryGetValue(id, out var last)) return;
                 me = MakeContact(id, last.pointerInfo.ptPixelLocation.x, last.pointerInfo.ptPixelLocation.y, phase == 3 ? (UP | CANCELED) : UP);

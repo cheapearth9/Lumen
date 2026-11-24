@@ -264,7 +264,7 @@ final class TouchEngine {
             lastTapEnd = (gestureMoved || cancelled) ? -100 : ts
             return
         }
-        guard !cancelled, !gestureMoved else { return }
+        guard !cancelled, !gestureMoved, !longPressDone else { return }
         let dur = ts - gestureStart
         if gestureMax == 1 && dur < TouchEngine.tapMax {
             click(0)
@@ -276,7 +276,10 @@ final class TouchEngine {
 
     // MARK: Touchscreen, emulated (host without native touch)
 
+    private var longPressDone = false
+
     private func emuDown() {
+        longPressDone = false
         if tracks.count == 1 {
             scheduleLongPress()
         } else {
@@ -313,9 +316,6 @@ final class TouchEngine {
         if gestureMax == 1 && dur < TouchEngine.tapMax {
             sendAbs(tr.start)
             click(0)
-        } else if gestureMax == 2 && dur < TouchEngine.twoTapMax {
-            sendAbs(gestureMid)
-            click(1)
         }
     }
 
@@ -335,9 +335,9 @@ final class TouchEngine {
         longPressWork = nil
         guard route == .emulated, tracks.count == 1, gestureMax == 1, !gestureMoved, !buttonHeld,
               let tr = tracks.values.first else { return }
-        buttonHeld = true
         sendAbs(tr.location)
-        delegate?.engineEmit(.button(0, down: true))
+        click(1)                                       // touch and hold = right click
+        longPressDone = true
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
@@ -348,69 +348,20 @@ final class TouchEngine {
         return .touch(id: UInt8(tr.slot), phase: phase, x: x, y: y)
     }
 
+    // One finger = a real touch (the computer shows its touch feedback); holding still = the computer's own
+    // touch-and-hold, which opens the right-click menu. Everything goes straight through.
     private func nativeDown(_ key: ObjectIdentifier) {
         guard let tr = tracks[key] else { return }
-        let ev = touchEvent(tr, phase: 0)
-        switch nativePhase {
-        case .idle:
-            nativePhase = .buffering
-            buffer.append(ev)
-            scheduleNativeFlush(after: TouchEngine.bufferWindow)
-        case .buffering:
-            buffer.append(ev)
-            if tracks.count == 2 {
-                // Two fingers began together: wait to see whether this is a two-finger tap (right click).
-                nativePhase = .candidate
-                scheduleNativeFlush(after: TouchEngine.candidateWindow)
-            } else {
-                nativeFlush()
-            }
-        case .candidate:
-            buffer.append(ev)
-            nativeFlush()
-        case .passthrough:
-            delegate?.engineEmit(ev)
-        }
+        nativePhase = .passthrough
+        delegate?.engineEmit(touchEvent(tr, phase: 0))
     }
 
     private func nativeMove(_ tr: Track) {
-        let ev = touchEvent(tr, phase: 1)
-        switch nativePhase {
-        case .buffering, .candidate:
-            buffer.append(ev)
-            if tr.moved || buffer.count > 64 { nativeFlush() }
-        case .passthrough:
-            delegate?.engineEmit(ev)
-        case .idle:
-            break
-        }
+        delegate?.engineEmit(touchEvent(tr, phase: 1))
     }
 
     private func nativeEnd(_ tr: Track, last: Bool, cancelled: Bool) {
-        let ev = touchEvent(tr, phase: cancelled ? 3 : 2)
-        switch nativePhase {
-        case .buffering:
-            buffer.append(ev)
-            nativeFlush()
-        case .candidate:
-            if cancelled {
-                buffer.append(ev)
-                nativeFlush()
-            } else if last {
-                // Both fingers lifted inside the window without moving: a right click, not two touches.
-                nativeWork?.cancel(); nativeWork = nil
-                nativePhase = .passthrough
-                buffer.removeAll(keepingCapacity: true)
-                sendAbs(gestureMid)
-                click(1)
-            } else {
-                buffer.append(ev)
-            }
-        case .passthrough:
-            delegate?.engineEmit(ev)
-        case .idle:
-            break
-        }
+        delegate?.engineEmit(touchEvent(tr, phase: cancelled ? 3 : 2))
     }
 
     private func scheduleNativeFlush(after delay: TimeInterval) {
