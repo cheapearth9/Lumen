@@ -6,6 +6,10 @@ post_install() {
   if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] && id "$SUDO_USER" >/dev/null 2>&1; then
     usermod -aG input "$SUDO_USER" >/dev/null 2>&1 && echo "Lumen Host: added '$SUDO_USER' to group 'input' (log out and in again)."
   fi
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow 47900/udp >/dev/null 2>&1 || true; fi
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-port=47900/udp >/dev/null 2>&1 || true; firewall-cmd --reload >/dev/null 2>&1 || true
+  fi
   echo "Lumen Host: remote input needs access to /dev/uinput."
   echo "  Add yourself:  sudo usermod -aG input \$USER   (then log out and in again)"
   echo "  Run:           lumenhost     Autostart: systemctl --user enable --now lumenhost"

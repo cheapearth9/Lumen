@@ -52,6 +52,8 @@ internal static class Program
 
         if (check) return await platform.CheckAsync();
 
+        if (!Console.IsInputRedirected && !Console.IsOutputRedirected && await OfferUpdateAsync()) return 0;
+
         using var core = new HostCore(platform, name);
         var done = new TaskCompletionSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; done.TrySetResult(); };
@@ -83,5 +85,63 @@ internal static class Program
 
         await done.Task;
         return 0;
+    }
+
+    /// Asks (Y/N) when a newer release exists. Returns true when an update was installed and the program should exit.
+    private static async Task<bool> OfferUpdateAsync()
+    {
+        var u = await Updater.CheckAsync();
+        if (u == null) return false;
+        Console.Write($"Lumen Host {u.Latest} is available (you have {Updater.Current}). Would you like to update to the latest version? [y/N/s=skip this version] ");
+        var answer = (Console.ReadLine() ?? "").Trim().ToLowerInvariant();
+        if (answer == "s") { Updater.Skip(u); return false; }
+        if (answer != "y" && answer != "yes") { Updater.Later(); return false; }
+
+        try
+        {
+            string? appImage = Environment.GetEnvironmentVariable("APPIMAGE");
+            bool dpkg = File.Exists("/usr/bin/dpkg") && File.Exists("/usr/bin/lumenhost");
+            bool pacman = File.Exists("/usr/bin/pacman") && File.Exists("/usr/bin/lumenhost");
+            if (!string.IsNullOrEmpty(appImage) && File.Exists(appImage))
+            {
+                string? name = Updater.FindAsset(u, "Lumen-Host-", RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "aarch64.AppImage" : "x86_64.AppImage")
+                               ?? Updater.FindAsset(u, "Lumen-Host-", ".AppImage");
+                if (name == null) throw new InvalidOperationException("no AppImage in the release");
+                string tmp = await Updater.DownloadAsync(u, name);
+                File.Copy(tmp, appImage + ".new", true);
+                File.SetUnixFileMode(appImage + ".new", (UnixFileMode)0b111_101_101);
+                File.Move(appImage + ".new", appImage, true);
+                Console.WriteLine("Updated. Start lumenhost again.");
+                return true;
+            }
+            if (dpkg)
+            {
+                string name = Updater.FindAsset(u, "lumenhost_", "_amd64.deb") ?? throw new InvalidOperationException("no .deb in the release");
+                string tmp = await Updater.DownloadAsync(u, name);
+                if (!await RunAsync("sudo", "dpkg", "-i", tmp)) throw new InvalidOperationException("dpkg failed");
+                Console.WriteLine("Updated. Start lumenhost again.");
+                return true;
+            }
+            if (pacman)
+            {
+                string name = Updater.FindAsset(u, "lumenhost-", ".pkg.tar.zst") ?? throw new InvalidOperationException("no Arch package in the release");
+                string tmp = await Updater.DownloadAsync(u, name);
+                if (!await RunAsync("sudo", "pacman", "-U", tmp)) throw new InvalidOperationException("pacman failed");
+                Console.WriteLine("Updated. Start lumenhost again.");
+                return true;
+            }
+            Console.WriteLine("Download the new version from " + u.PageUrl);
+        }
+        catch (Exception ex) { Console.WriteLine("Update failed: " + ex.Message + "\nYou can download it from " + u.PageUrl); }
+        return false;
+    }
+
+    private static async Task<bool> RunAsync(string file, params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(file) { UseShellExecute = false };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = System.Diagnostics.Process.Start(psi)!;
+        await p.WaitForExitAsync();
+        return p.ExitCode == 0;
     }
 }

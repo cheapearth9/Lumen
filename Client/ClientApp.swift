@@ -74,7 +74,6 @@ struct RootView: View {
     @StateObject private var client = StreamClient()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("fps") private var fps = 60
-    @AppStorage("mbps") private var mbps = 40.0
     @AppStorage("manualHost") private var manualHost = ""
 
     var body: some View {
@@ -85,7 +84,7 @@ struct RootView: View {
                     .statusBarHidden(true)
                     .persistentSystemOverlays(.hidden)
             } else {
-                ConnectView(client: client, fps: $fps, mbps: $mbps, manualHost: $manualHost, makeHello: makeHello)
+                ConnectView(client: client, fps: $fps, manualHost: $manualHost, makeHello: makeHello)
             }
         }
         .onAppear {
@@ -105,7 +104,7 @@ struct RootView: View {
         let b = target.nativeBounds
         let w = min(3840, max(b.width, b.height))
         let h = min(2160, min(b.width, b.height))
-        return HelloInfo(width: UInt16(w), height: UInt16(h), fps: UInt8(fps), bitrateMbps: UInt16(mbps),
+        return HelloInfo(width: UInt16(w), height: UInt16(h), fps: UInt8(fps), bitrateMbps: 40,
                          flags: LumenSettings.helloFlags())
     }
 }
@@ -113,7 +112,8 @@ struct RootView: View {
 struct ConnectView: View {
     @ObservedObject var client: StreamClient
     @Binding var fps: Int
-    @Binding var mbps: Double
+    @AppStorage("mbpsCable") private var mbpsCable = 100.0
+    @AppStorage("mbpsWifi") private var mbpsWifi = 40.0
     @Binding var manualHost: String
     let makeHello: () -> HelloInfo
 
@@ -211,8 +211,12 @@ struct ConnectView: View {
                     }
                     .pickerStyle(.segmented)
                     VStack(alignment: .leading) {
-                        Text("Bitrate: \(Int(mbps)) Mbps")
-                        Slider(value: $mbps, in: 8...150, step: 1)
+                        Text("Cable bitrate: \(Int(mbpsCable)) Mbps")
+                        Slider(value: $mbpsCable, in: 8...150, step: 1)
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Wi-Fi bitrate: \(Int(mbpsWifi)) Mbps")
+                        Slider(value: $mbpsWifi, in: 8...80, step: 1)
                     }
                 }
 

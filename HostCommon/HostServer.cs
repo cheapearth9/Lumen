@@ -190,11 +190,22 @@ public sealed class HostServer : IDisposable
 
     public void Start()
     {
-        var s = new Socket(AddressFamily.InterNetworkV6, SocketType.Dgram, ProtocolType.Udp) { DualMode = true };
+        Socket s;
+        try
+        {
+            s = new Socket(AddressFamily.InterNetworkV6, SocketType.Dgram, ProtocolType.Udp) { DualMode = true };
+            s.Bind(new IPEndPoint(IPAddress.IPv6Any, Wire.UdpPort));
+        }
+        catch (Exception ex)
+        {
+            // IPv6 disabled or unavailable (common on some Linux setups): listen on IPv4 only.
+            HostLog.Write("IPv6 socket failed (" + ex.Message + "); using IPv4");
+            s = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            s.Bind(new IPEndPoint(IPAddress.Any, Wire.UdpPort));
+        }
         s.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendBuffer, 4 * 1024 * 1024);
         s.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveBuffer, 1024 * 1024);
         try { s.IOControl((IOControlCode)(-1744830452), new byte[] { 0, 0, 0, 0 }, null); } catch { } // ignore ICMP port-unreachable resets
-        s.Bind(new IPEndPoint(IPAddress.IPv6Any, Wire.UdpPort));
 
         lock (_gate) { _udp = s; _running = true; }
         new Thread(UdpLoop) { IsBackground = true, Name = "lumen-udp" }.Start();

@@ -32,6 +32,7 @@ public sealed class MainForm : Form
         _s = new HostCore(_platform, Environment.MachineName);
 
         Text = "Lumen Host";
+        Shown += async (_, _) => await OfferUpdateAsync();
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
         FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -239,4 +240,45 @@ public sealed class MainForm : Form
     }
 
     private void UpdateDot() => _dot.BackColor = _connected ? Color.SeaGreen : (_running ? Color.Orange : Color.Gray);
+
+    // MARK: Auto-update
+
+    private async Task OfferUpdateAsync()
+    {
+        var u = await Updater.CheckAsync();
+        if (u == null || IsDisposed) return;
+        using var dlg = new Form
+        {
+            Text = "Lumen Host update", FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
+            MaximizeBox = false, MinimizeBox = false, ShowInTaskbar = false, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Padding = new Padding(16), Font = Font
+        };
+        var msg = new Label { AutoSize = true, MaximumSize = new Size(360, 0), Text = $"Would you like to update to the latest version?\n\nVersion {u.Latest} is available (you have {Updater.Current})." };
+        var update = new Button { Text = "Update now", DialogResult = DialogResult.Yes, AutoSize = true };
+        var later = new Button { Text = "Remind me later", DialogResult = DialogResult.Retry, AutoSize = true };
+        var skip = new Button { Text = "Skip", DialogResult = DialogResult.Ignore, AutoSize = true };
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 12, 0, 0) };
+        row.Controls.AddRange(new Control[] { update, later, skip });
+        var col = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown };
+        col.Controls.AddRange(new Control[] { msg, row });
+        dlg.Controls.Add(col);
+        dlg.AcceptButton = update; dlg.CancelButton = later;
+        var r = dlg.ShowDialog(this);
+        if (r == DialogResult.Ignore) { Updater.Skip(u); return; }
+        if (r != DialogResult.Yes) { Updater.Later(); return; }
+
+        _status.Text = "Downloading update...";
+        try
+        {
+            string path = await Updater.DownloadAsync(u, "Lumen-Host-Setup.exe", new Progress<double>(p => _status.Text = $"Downloading update... {p:P0}"));
+            // The installer closes this app, replaces it and starts it again.
+            Process.Start(new ProcessStartInfo(path, "/SILENT /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS") { UseShellExecute = true });
+            Application.Exit();
+        }
+        catch (Exception ex)
+        {
+            _status.Text = "Update failed: " + ex.Message;
+            HostLog.Write("update failed: " + ex);
+        }
+    }
 }

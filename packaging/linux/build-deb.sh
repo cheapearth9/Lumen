@@ -28,8 +28,8 @@ Priority: optional
 Architecture: ${arch}
 Installed-Size: ${installed_size}
 Maintainer: Lumen <noreply@users.noreply.github.com>
-Depends: libc6, libstdc++6, ffmpeg, x11-utils, x11-xserver-utils
-Recommends: pulseaudio-utils | pipewire-pulse, python3-gi, gstreamer1.0-pipewire, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad
+Depends: libc6, libstdc++6, ffmpeg, x11-utils, x11-xserver-utils, python3, python3-gi, gir1.2-gstreamer-1.0, gstreamer1.0-tools, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-vaapi
+Recommends: pulseaudio-utils | pipewire-pulse
 Homepage: https://github.com/cheapearth9/Lumen
 Description: Lumen Host - stream this screen to an iPhone or iPad
  Lumen Host captures the X11 screen with ffmpeg and streams it to the
@@ -48,6 +48,14 @@ if [ "$1" = "configure" ]; then
     if command -v udevadm >/dev/null 2>&1; then
         udevadm control --reload >/dev/null 2>&1 || true
         udevadm trigger >/dev/null 2>&1 || true
+    fi
+    # Let the stream through the firewall (UDP 47900) when one is active.
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow 47900/udp >/dev/null 2>&1 || true
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+        firewall-cmd --permanent --add-port=47900/udp >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
     fi
     added=""
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] && id "$SUDO_USER" >/dev/null 2>&1; then

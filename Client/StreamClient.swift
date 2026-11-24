@@ -387,6 +387,11 @@ final class StreamClient: ObservableObject {
     private func begin(_ c: NWConnection, cable: Bool, hello: HelloInfo, target: Target) {
         teardown(notify: false)
         epoch += 1
+        var hello = hello
+        // Separate bitrate settings for the USB cable and for Wi-Fi/Ethernet.
+        let ud = UserDefaults.standard
+        let chosen = cable ? (ud.object(forKey: "mbpsCable") as? Double ?? 100) : (ud.object(forKey: "mbpsWifi") as? Double ?? 40)
+        hello.bitrateMbps = UInt16(chosen)
         self.hello = hello
         self.target = target
         pairingKey = nil

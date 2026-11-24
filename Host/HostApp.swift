@@ -12,6 +12,7 @@ struct LumenHostApp: App {
             HostView()
                 .environmentObject(host)
                 .frame(minWidth: 460, minHeight: 560)
+                .onAppear { Updater.checkAtLaunch() }
         }
         .windowResizability(.contentSize)
     }

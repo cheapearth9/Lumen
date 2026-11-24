@@ -154,6 +154,7 @@ public sealed class FfmpegPipeline : IDisposable
     private string _exe = "ffmpeg";
     private int _index, _gen;
     private bool _stopped, _gotFrame;
+    private long _lastFrameTick;
     private Process? _proc;
     private Socket? _rtp;
     private System.Threading.Timer? _noFrame;
@@ -397,7 +398,21 @@ public sealed class FfmpegPipeline : IDisposable
         lock (_sync)
         {
             if (_stopped || gen != _gen) return false;
-            if (!_gotFrame) { _gotFrame = true; try { _noFrame?.Dispose(); } catch { } _noFrame = null; }
+            _lastFrameTick = Environment.TickCount64;
+            if (!_gotFrame)
+            {
+                _gotFrame = true; try { _noFrame?.Dispose(); } catch { } _noFrame = null;
+                // Stall watchdog: capture that produced a first frame and then went silent (seen with virtual displays)
+                // falls through to the next capture method instead of leaving the picture frozen.
+                _noFrame = new System.Threading.Timer(_ =>
+                {
+                    bool canFallBack;
+                    lock (_sync) canFallBack = !_stopped && gen == _gen && _index + 1 < _cands.Count && Environment.TickCount64 - _lastFrameTick > 4000;
+                    if (!canFallBack) return;
+                    lock (_sync) _gotFrame = false;
+                    Advance(gen, "video stalled for 4 seconds");
+                }, null, 1000, 1000);
+            }
         }
         Frame?.Invoke(avcc.ToArray(), key, sets);
         return true;
