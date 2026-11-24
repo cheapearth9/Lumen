@@ -35,9 +35,27 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 enum ExternalDisplay {
     static let changed = Notification.Name("LumenExternalDisplayChanged")
     private(set) static var count = 0
+    static var screen: UIScreen?
     static var isConnected: Bool { count > 0 }
-    static func update(_ delta: Int) {
+
+    /// The user can switch the external display / AirPlay output off from the stream menu.
+    static var enabled: Bool {
+        get { UserDefaults.standard.object(forKey: "externalOn") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "externalOn"); NotificationCenter.default.post(name: changed, object: nil) }
+    }
+    static var isActive: Bool { isConnected && enabled }
+
+    /// Real pixel size of the attached monitor (its current mode, e.g. 1920x1080), not the scaled point size.
+    static var pixelSize: CGSize? {
+        guard let s = screen else { return nil }
+        if let m = s.currentMode?.size, m.width > 0 { return m }
+        let n = s.nativeBounds.size
+        return n.width > 0 ? n : nil
+    }
+
+    static func update(_ delta: Int, screen newScreen: UIScreen? = nil) {
         count = max(0, count + delta)
+        if delta > 0 { screen = newScreen } else if count == 0 { screen = nil }
         NotificationCenter.default.post(name: changed, object: nil)
     }
 }
@@ -52,10 +70,11 @@ final class ExternalSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let vc = ExternalVideoController()
         let w = UIWindow(windowScene: windowScene)
         w.rootViewController = vc
+        windowScene.screen.overscanCompensation = .none      // no inset black border on TVs / AirPlay
         w.frame = windowScene.screen.bounds
         w.isHidden = false
         window = w
-        ExternalDisplay.update(1)
+        ExternalDisplay.update(1, screen: windowScene.screen)
     }
 }
 
@@ -65,6 +84,12 @@ final class ExternalVideoController: UIViewController {
         v.displayLayer.videoGravity = .resizeAspect
         view = v
     }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: ExternalDisplay.changed, object: nil)
+        refresh()
+    }
+    @objc private func refresh() { view.isHidden = !ExternalDisplay.enabled }
     override var prefersStatusBarHidden: Bool { true }
 }
 
@@ -117,9 +142,11 @@ enum ResolutionSetting {
             let w = d.object(forKey: widthKey) as? Int ?? 1920, h = d.object(forKey: heightKey) as? Int ?? 1080
             return (min(3840, max(640, w)) & ~1, min(2160, max(360, h)) & ~1)
         default:
-            let screens = UIScreen.screens
-            let target = screens.count > 1 ? screens[screens.count - 1] : UIScreen.main
-            let b = target.nativeBounds
+            // With a monitor / AirPlay display attached (and switched on): its real resolution, so a 1080p monitor gets 1080p.
+            if ExternalDisplay.isActive, let m = ExternalDisplay.pixelSize {
+                return (Int(min(3840, m.width)) & ~1, Int(min(2160, m.height)) & ~1)
+            }
+            let b = UIScreen.main.nativeBounds
             return (Int(min(3840, max(b.width, b.height))), Int(min(2160, min(b.width, b.height))))
         }
     }
@@ -144,7 +171,7 @@ struct ResolutionPicker: View {
                 TextField("Height", value: $h, format: .number.grouping(.never)).keyboardType(.numberPad)
             }
         }
-        Text(mode == 0 ? "The device's own resolution (an attached monitor's resolution when one is plugged in)."
+        Text(mode == 0 ? "The device's own resolution, or the attached monitor's own resolution (for example 1080p) when one is connected."
              : mode == 1 ? "1920×1080: lighter on the computer and the network."
              : "Between 640×360 and 3840×2160. The picture keeps the computer screen's shape inside this size.")
             .font(.footnote).foregroundStyle(.secondary)

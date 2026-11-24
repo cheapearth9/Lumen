@@ -370,6 +370,16 @@ final class StreamClient: ObservableObject {
         }
     }
 
+    /// A monitor was plugged in / switched on or off while streaming: ask the computer for the new size (no-op if unchanged).
+    func reconnectForResolution() {
+        let (w, h) = ResolutionSetting.requested()
+        queue.async {
+            guard var hello = self.hello, self.handshakeDone, Int(hello.width) != w || Int(hello.height) != h else { return }
+            hello.width = UInt16(w); hello.height = UInt16(h)
+            self.switchHello(hello)
+        }
+    }
+
     private func switchHello(_ h: HelloInfo) {
         hello = h
         gotWelcome = false

@@ -1,4 +1,5 @@
 import UIKit
+import AVKit
 import SwiftUI
 import Combine
 
@@ -9,6 +10,11 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
     private let input: InputCapture
     private lazy var gamepads = GamepadCapture(client: client)
     private let softKeyboard = SoftKeyboardView()
+    private let routePicker: AVRoutePickerView = {
+        let r = AVRoutePickerView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+        r.alpha = 0.01
+        return r
+    }()
     private let engine = TouchEngine()
     private let touchView = TouchSurfaceView()
     private let videoView = VideoView()
@@ -127,6 +133,7 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
         softKeyboard.send = { [weak self] e in self?.client.sendInput(e) }
         softKeyboard.onHidden = { [weak self] in self?.rebuildMenu() }
         view.addSubview(softKeyboard)
+        view.addSubview(routePicker)
         if UserDefaults.standard.bool(forKey: "keyboardAuto") { DispatchQueue.main.async { self.softKeyboard.becomeFirstResponder() } }
         // With a monitor attached the stream plays there fullscreen and this screen is the touch surface.
         NotificationCenter.default.addObserver(self, selector: #selector(externalChanged), name: ExternalDisplay.changed, object: nil)
@@ -140,7 +147,9 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
     }
 
     @objc private func externalChanged() {
-        videoView.isHidden = ExternalDisplay.isConnected
+        videoView.isHidden = ExternalDisplay.isActive
+        rebuildMenu()
+        client.reconnectForResolution()
     }
 
     deinit {
@@ -211,7 +220,18 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
             else { _ = self.softKeyboard.becomeFirstResponder() }
             self.rebuildMenu()
         }
-        menuButton.menu = UIMenu(children: [displayMenu, sound, touchMenu, keyboard, lock, disc])
+        let ext = ExternalDisplay.enabled
+        let airplayToggle = UIAction(title: ext ? "External display / AirPlay: On" : "External display / AirPlay: Off",
+                                     image: UIImage(systemName: "airplayvideo"), state: ext ? .on : .off) { [weak self] _ in
+            ExternalDisplay.enabled.toggle()                       // observers update the screens and this menu
+            self?.client.reconnectForResolution()
+        }
+        let airplayPick = UIAction(title: "Choose AirPlay screen…", image: UIImage(systemName: "airplay.video")) { [weak self] _ in
+            guard let btn = self?.routePicker.subviews.compactMap({ $0 as? UIButton }).first else { return }
+            btn.sendActions(for: .touchUpInside)
+        }
+        let airplay = UIMenu(title: "AirPlay", image: UIImage(systemName: "airplayvideo"), children: [airplayToggle, airplayPick])
+        menuButton.menu = UIMenu(children: [displayMenu, sound, touchMenu, keyboard, airplay, lock, disc])
     }
 
     // MARK: Geometry
