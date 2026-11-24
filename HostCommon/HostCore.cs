@@ -59,8 +59,10 @@ public sealed class HostCore : IDisposable
     public bool CableDaemonReachable => _usb.DaemonReachable;
     public int CableDevices => _usb.DeviceCount;
     public string ServerName { get; }
-    public byte[] PairingKey => _server.PairingKey;
-    public byte[] NewPairingKey() => _server.PairingKey = PairingCode.Regenerate();
+    public PairedStore Paired => _server.Paired;
+    /// A device wants to pair: ask the user to type the 5-digit code the device shows, then call request.Submit(code).
+    public event Action<HostServer.PairRequest>? PairRequested { add => _server.PairRequested += value; remove => _server.PairRequested -= value; }
+    public event Action? PairResolved { add => _server.PairResolved += value; remove => _server.PairResolved -= value; }
 
     /// Host-side Mirror / Extend choice (null = follow whatever the client asked for). Restarts a running session.
     public bool? ModeOverride => _modeOverride;

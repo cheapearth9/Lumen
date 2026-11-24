@@ -1,40 +1,133 @@
 import Foundation
 import CryptoKit
 import Security
-import CommonCrypto
 
-// End-to-end encryption for the Lumen protocol. Must stay byte-compatible with HostCommon/Crypto.cs.
+// End-to-end encryption and device pairing for the Lumen protocol. Must stay byte-compatible with HostCommon/Crypto.cs.
 //
-//  * Pairing code: a random 5-digit PIN shown on the host. The user types it into the iOS app once per host.
-//    Both sides stretch it: psk = PBKDF2-HMAC-SHA256(pin ASCII, salt "lumen-pin-v1", 200000 iterations, 32 bytes).
-//  * Handshake (the only unencrypted packet type besides discover/announce), carried in PacketType.handshake:
-//        client -> host : [0 role][1 version][65 P-256 public key (x9.63)][16 client nonce]
-//        host -> client : [1 role][1 version][65 P-256 public key (x9.63)][16 server nonce]
-//  * Keys: ikm  = ECDH raw shared secret (32 bytes) || stretched pairing key (32 bytes)
-//          salt = client nonce || server nonce
-//          c2s / s2c = HKDF-SHA256(ikm, salt, info "lumen-v1 c2s" / "lumen-v1 s2c") -> 32 bytes each
-//    A peer without the pairing code derives different keys, so nothing it sends authenticates.
-//  * Sealed packet: [0x4C 0x45][seq u64 BE][ciphertext][16-byte tag], AES-256-GCM,
-//    nonce = 4 zero bytes || seq (8 bytes BE), AAD = the first 10 bytes. The plaintext is a normal Lumen packet.
+// PAIRING (once per device, Sunshine/Apollo style; the 5-digit code is shown on the iPad and typed on the computer):
+//   Packets use PacketType.pair, unencrypted; payload = [step u8] + body.
+//     1 client -> host : [1][32 commit = SHA256(pkC || nonceC)][device name, UTF-8, up to 40 bytes]
+//     2 host -> client : [2][65 host P-256 public key (x9.63)][16 host nonce]
+//     3 client -> host : [3][65 client public key][16 client nonce]     (host checks the commit)
+//     4 host -> client : [4][result: 0 paired, 1 wrong code, 2 busy / locked out, 3 error]
+//   Both sides compute the same 5-digit code (short authentication string):
+//        code = (u32 big endian of SHA256("lumen-sas-v1" || pkC || pkH || nonceC || nonceH)[0..<4]) % 100000
+//   The client shows it, the user types it into the computer, and the computer only accepts if it matches its own.
+//   A man in the middle needs the code to match on both legs while having to fix its own keys before it sees
+//   the other leg's, so each attempt succeeds with probability 1/100000 and is visible to the user.
+//   Long-term secret = HKDF-SHA256(ECDH raw shared secret, salt nonceC || nonceH, info "lumen-pair-v1") -> 32 bytes.
+//   Key id = SHA256("lumen-keyid" || secret)[0..<8]. The host stores (id, name, secret); the client stores the secret.
+//
+// CONNECTING (every session), handshake packets (PacketType.handshake, unencrypted):
+//     client -> host : [0 role][2 version][65 P-256 public key][16 client nonce][8 key id]
+//     host -> client : [1 role][2 version][65 public key][16 server nonce]       (key id known)
+//                    : [2 role][2 version]                                       (key id unknown -> pairing required)
+//   Keys: ikm = ECDH raw secret (32) || long-term secret (32);  salt = client nonce || server nonce;
+//         c2s / s2c = HKDF-SHA256(ikm, salt, info "lumen-v1 c2s" / "lumen-v1 s2c") -> 32 bytes each.
+//   Sealed packet: [0x4C 0x45][seq u64 BE][ciphertext][16-byte tag], AES-256-GCM,
+//   nonce = 4 zero bytes || seq (8 bytes BE), AAD = the first 10 bytes. The plaintext is a normal Lumen packet.
 
-enum PairingCode {
-    /// A 5-digit PIN. The key bytes are the ASCII digits; SecureSession stretches them with PBKDF2 before use.
-    static func generate() -> Data {
-        var out = [UInt8]()
-        for _ in 0..<5 {
-            var b: UInt8 = 0
-            repeat { _ = SecRandomCopyBytes(kSecRandomDefault, 1, &b) } while b >= 250   // unbiased 0-9
-            out.append(UInt8(ascii: "0") + b % 10)
-        }
-        return Data(out)
+enum PairingCrypto {
+    static func sha256(_ parts: Data...) -> Data {
+        var h = SHA256()
+        for p in parts { h.update(data: p) }
+        return Data(h.finalize())
     }
 
-    static func format(_ key: Data) -> String { String(decoding: key, as: UTF8.self) }
+    static func keyId(_ secret: Data) -> Data { sha256(Data("lumen-keyid".utf8), secret).prefix(8) }
 
-    /// Accepts digits with any separators. Returns nil unless exactly 5 digits.
-    static func parse(_ text: String) -> Data? {
-        let digits = text.utf8.filter { $0 >= 48 && $0 <= 57 }
-        return digits.count == 5 ? Data(digits) : nil
+    static func random(_ n: Int) -> Data {
+        var b = [UInt8](repeating: 0, count: n)
+        _ = SecRandomCopyBytes(kSecRandomDefault, n, &b)
+        return Data(b)
+    }
+
+    static func code(pkC: Data, pkH: Data, nonceC: Data, nonceH: Data) -> String {
+        let d = sha256(Data("lumen-sas-v1".utf8), pkC, pkH, nonceC, nonceH)
+        let v = d.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        return String(format: "%05d", v % 100000)
+    }
+
+    static func secret(ecdh: Data, nonceC: Data, nonceH: Data) -> Data {
+        let k = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: ecdh), salt: nonceC + nonceH,
+                                       info: Data("lumen-pair-v1".utf8), outputByteCount: 32)
+        return k.withUnsafeBytes { Data($0) }
+    }
+
+    /// "12345" -> "12345"; accepts digits with any separators. Nil unless exactly 5 digits.
+    static func parseCode(_ text: String) -> String? {
+        let d = text.filter { $0.isASCII && $0.isNumber }
+        return d.count == 5 ? d : nil
+    }
+}
+
+/// Client side of pairing (the iOS app).
+final class PairingClient {
+    private let key = P256.KeyAgreement.PrivateKey()
+    private let nonce = PairingCrypto.random(16)
+    private(set) var code: String?
+    private(set) var secret: Data?
+
+    var publicKey: Data { key.publicKey.x963Representation }
+
+    /// Payload of the first pair packet.
+    func start(deviceName: String) -> Data {
+        var d = Data([1])
+        d.append(PairingCrypto.sha256(publicKey, nonce))
+        d.append(Data(deviceName.utf8.prefix(40)))
+        return d
+    }
+
+    /// Process the host's step 2. Returns the step-3 payload; `code` and `secret` are then available.
+    func handleStep2(_ payload: Data) -> Data? {
+        let b = [UInt8](payload)
+        guard b.count == 1 + 65 + 16, b[0] == 2,
+              let peer = try? P256.KeyAgreement.PublicKey(x963Representation: Data(b[1..<66])),
+              let shared = try? key.sharedSecretFromKeyAgreement(with: peer) else { return nil }
+        let pkH = Data(b[1..<66]), nonceH = Data(b[66..<82])
+        code = PairingCrypto.code(pkC: publicKey, pkH: pkH, nonceC: nonce, nonceH: nonceH)
+        secret = PairingCrypto.secret(ecdh: shared.withUnsafeBytes { Data($0) }, nonceC: nonce, nonceH: nonceH)
+        var d = Data([3])
+        d.append(publicKey)
+        d.append(nonce)
+        return d
+    }
+}
+
+/// Host side of one pairing attempt.
+final class PairingHost {
+    private let key = P256.KeyAgreement.PrivateKey()
+    private let nonce = PairingCrypto.random(16)
+    private var commit = Data()
+    private(set) var deviceName = ""
+    private(set) var code: String?
+    private(set) var secret: Data?
+
+    /// Process step 1; returns the step-2 payload.
+    func handleStep1(_ payload: Data) -> Data? {
+        let b = [UInt8](payload)
+        guard b.count >= 1 + 32, b[0] == 1 else { return nil }
+        commit = Data(b[1..<33])
+        let raw = String(decoding: b[33...], as: UTF8.self)
+        deviceName = raw.filter { !$0.isNewline && $0 != "\0" }.isEmpty ? "Device" : String(raw.prefix(40))
+        var d = Data([2])
+        d.append(key.publicKey.x963Representation)
+        d.append(nonce)
+        return d
+    }
+
+    /// Process step 3. On success `code` (what the user must type) and `secret` are set.
+    func handleStep3(_ payload: Data) -> Bool {
+        let b = [UInt8](payload)
+        guard b.count == 1 + 65 + 16, b[0] == 3 else { return false }
+        let pkC = Data(b[1..<66]), nonceC = Data(b[66..<82])
+        guard PairingCrypto.sha256(pkC, nonceC) == commit,
+              let peer = try? P256.KeyAgreement.PublicKey(x963Representation: pkC),
+              let shared = try? key.sharedSecretFromKeyAgreement(with: peer) else { return false }
+        let pkH = key.publicKey.x963Representation
+        code = PairingCrypto.code(pkC: pkC, pkH: pkH, nonceC: nonceC, nonceH: nonce)
+        secret = PairingCrypto.secret(ecdh: shared.withUnsafeBytes { Data($0) }, nonceC: nonceC, nonceH: nonce)
+        return true
     }
 }
 
@@ -57,7 +150,7 @@ struct ReplayWindow {
 }
 
 final class SecureSession {
-    private static let version: UInt8 = 1
+    private static let version: UInt8 = 2
     private static let sealedMagic: [UInt8] = [0x4C, 0x45]
 
     private let isClient: Bool
@@ -72,41 +165,30 @@ final class SecureSession {
 
     private(set) var isReady = false
 
-    private static var stretchCache = [Data: Data]()
-    private static let stretchLock = NSLock()
-
-    /// A 5-digit PIN has little entropy, so it is stretched (PBKDF2-SHA256, 200k iterations) before it enters the key derivation.
-    private static func stretch(_ pin: Data) -> Data {
-        stretchLock.lock(); defer { stretchLock.unlock() }
-        if let c = stretchCache[pin] { return c }
-        var out = [UInt8](repeating: 0, count: 32)
-        let salt = Array("lumen-pin-v1".utf8)
-        let pinBytes = [UInt8](pin)
-        _ = CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2), pinBytes.map { Int8(bitPattern: $0) }, pinBytes.count,
-                                 salt, salt.count, CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256), 200_000, &out, out.count)
-        let d = Data(out)
-        stretchCache[pin] = d
-        return d
-    }
-
     private init(isClient: Bool, psk: Data) {
         self.isClient = isClient
-        self.psk = SecureSession.stretch(psk)
+        self.psk = psk
         privateKey = P256.KeyAgreement.PrivateKey()
-        var n = [UInt8](repeating: 0, count: 16)
-        _ = SecRandomCopyBytes(kSecRandomDefault, n.count, &n)
-        myNonce = Data(n)
+        myNonce = PairingCrypto.random(16)
     }
 
     // MARK: Handshake
 
-    /// Client: start a handshake. Send `clientHello` in a handshake packet, then pass the host's reply to `finish`.
+    /// Client: start a handshake with the long-term secret from pairing. Send `clientHello` in a handshake packet,
+    /// then pass the host's reply to `finish`.
     static func client(pairingKey: Data) -> (session: SecureSession, clientHello: Data) {
         let s = SecureSession(isClient: true, psk: pairingKey)
         var hello = Data([0, version])
         hello.append(s.privateKey.publicKey.x963Representation)
         hello.append(s.myNonce)
+        hello.append(PairingCrypto.keyId(pairingKey))
         return (s, hello)
+    }
+
+    /// True when a host reply says "this device is not paired" (the stored secret is unknown to the host).
+    static func isPairingRequired(_ reply: Data) -> Bool {
+        let b = [UInt8](reply)
+        return b.count >= 2 && b[0] == 2
     }
 
     /// Client: process the host's handshake reply. Returns false if it is malformed.
@@ -116,11 +198,21 @@ final class SecureSession {
         return derive(peerPublic: Data(b[2..<67]), clientNonce: myNonce, serverNonce: Data(b[67..<83]))
     }
 
-    /// Host: accept a client's handshake. Returns the session and the reply to send back.
-    static func accept(clientHello: Data, pairingKey: Data) -> (session: SecureSession, reply: Data)? {
+    /// The key id a client hello asks for (so the host can look up the secret). Nil if malformed.
+    static func keyId(ofClientHello hello: Data) -> Data? {
+        let b = [UInt8](hello)
+        guard b.count == 2 + 65 + 16 + 8, b[0] == 0, b[1] == version else { return nil }
+        return Data(b[83..<91])
+    }
+
+    /// The reply that tells a client it must pair first.
+    static var pairingRequiredReply: Data { Data([2, version]) }
+
+    /// Host: accept a client's handshake using the secret that belongs to its key id.
+    static func accept(clientHello: Data, secret: Data) -> (session: SecureSession, reply: Data)? {
         let b = [UInt8](clientHello)
-        guard b.count == 2 + 65 + 16, b[0] == 0, b[1] == version else { return nil }
-        let s = SecureSession(isClient: false, psk: pairingKey)
+        guard b.count == 2 + 65 + 16 + 8, b[0] == 0, b[1] == version else { return nil }
+        let s = SecureSession(isClient: false, psk: secret)
         guard s.derive(peerPublic: Data(b[2..<67]), clientNonce: Data(b[67..<83]), serverNonce: s.myNonce) else { return nil }
         var reply = Data([1, version])
         reply.append(s.privateKey.publicKey.x963Representation)
@@ -189,23 +281,42 @@ final class SecureSession {
     }
 }
 
-/// The host's pairing code, persisted in Application Support (created on first launch).
-enum PairingStore {
+/// Devices the Mac host has paired with: key id, name, secret. Stored in Application Support/Lumen/paired.json.
+struct PairedDevice: Codable { var id: String; var name: String; var secret: String }
+
+enum PairedStore {
+    private static let lock = NSLock()
+
     private static var url: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Lumen")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("pairing.key")
+        return dir.appendingPathComponent("paired.json")
     }
 
-    static func load() -> Data {
-        if let text = try? String(contentsOf: url, encoding: .utf8), let key = PairingCode.parse(text) { return key }
-        return regenerate()
+    static func all() -> [PairedDevice] {
+        lock.lock(); defer { lock.unlock() }
+        guard let d = try? Data(contentsOf: url), let list = try? JSONDecoder().decode([PairedDevice].self, from: d) else { return [] }
+        return list
     }
 
-    @discardableResult
-    static func regenerate() -> Data {
-        let key = PairingCode.generate()
-        try? PairingCode.format(key).write(to: url, atomically: true, encoding: .utf8)
-        return key
+    static func secret(forKeyId id: Data) -> Data? {
+        let hex = id.map { String(format: "%02x", $0) }.joined()
+        guard let dev = all().first(where: { $0.id == hex }) else { return nil }
+        return Data(base64Encoded: dev.secret)
+    }
+
+    static func add(name: String, secret: Data) {
+        var list = all()
+        let id = PairingCrypto.keyId(secret).map { String(format: "%02x", $0) }.joined()
+        list.removeAll { $0.id == id }
+        list.append(PairedDevice(id: id, name: name, secret: secret.base64EncodedString()))
+        save(list)
+    }
+
+    static func removeAll() { save([]) }
+
+    private static func save(_ list: [PairedDevice]) {
+        lock.lock(); defer { lock.unlock() }
+        if let d = try? JSONEncoder().encode(list) { try? d.write(to: url, options: .atomic) }
     }
 }

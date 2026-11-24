@@ -10,12 +10,15 @@ protocol HostLink: AnyObject {
     func close()
     /// Encryption state of this link (nil until a handshake arrived).
     var session: SecureSession? { get set }
+    /// Pairing attempt in progress on this link.
+    var pairing: PairingHost? { get set }
 }
 
 /// Wi-Fi / Ethernet: one datagram per packet.
 final class UDPLink: HostLink {
     let conn: NWConnection
     var session: SecureSession?
+    var pairing: PairingHost?
     init(_ c: NWConnection) { conn = c }
 
     func send(_ packets: [Data], droppable: Bool) {
@@ -35,6 +38,7 @@ final class TCPLink: HostLink {
     private let deframer = Deframer()
     let created = Date()
     var session: SecureSession?
+    var pairing: PairingHost?
 
     var onPacket: ((Data) -> Void)?
     var onClosed: (() -> Void)?
@@ -123,8 +127,12 @@ final class HostServer {
 
     /// Shown in the iOS app's list (Announce replies).
     var serverName = "Mac"
-    /// Secret both sides must know; everything except discover/handshake is encrypted with keys derived from it.
-    var pairingKey = PairingStore.load()
+    /// A device wants to pair: the UI asks the user for the 5-digit code the device displays.
+    var onPairRequest: ((_ deviceName: String) -> Void)?
+    var onPairResolved: (() -> Void)?
+    private var pendingPair: (link: HostLink, host: PairingHost)?
+    private var pairFailures = 0
+    private var lockedUntil = Date.distantPast
 
     private let flag = NSLock()
     private var wants = false
@@ -265,10 +273,17 @@ final class HostServer {
             guard let (ph, pp) = Wire.decode(raw) else { return }
             switch ph.type {
             case .handshake:
-                if let (session, reply) = SecureSession.accept(clientHello: pp, pairingKey: pairingKey) {
-                    link.session = session
-                    link.send([Wire.encode(PacketHeader(type: .handshake), payload: reply)], droppable: false)
+                guard let id = SecureSession.keyId(ofClientHello: pp) else { return }
+                if let secret = PairedStore.secret(forKeyId: id) {
+                    if let (session, reply) = SecureSession.accept(clientHello: pp, secret: secret) {
+                        link.session = session
+                        link.send([Wire.encode(PacketHeader(type: .handshake), payload: reply)], droppable: false)
+                    }
+                } else {
+                    link.send([Wire.encode(PacketHeader(type: .handshake), payload: SecureSession.pairingRequiredReply)], droppable: false)
                 }
+            case .pair:
+                handlePair(pp, link)
             case .discover:
                 let body = AnnounceInfo(platform: HostPlatform.mac.rawValue, name: serverName).encode()
                 link.send([Wire.encode(PacketHeader(type: .announce), payload: body)], droppable: false)
@@ -278,6 +293,61 @@ final class HostServer {
             return
         }
         handle(data, from: link)
+    }
+
+    // MARK: Pairing (see Shared/Crypto.swift)
+
+    private func sendPairResult(_ link: HostLink, _ result: UInt8) {
+        link.send([Wire.encode(PacketHeader(type: .pair), payload: Data([4, result]))], droppable: false)
+    }
+
+    private func handlePair(_ p: Data, _ link: HostLink) {
+        guard let step = p.first else { return }
+        if step == 1 {
+            if Date() < lockedUntil { sendPairResult(link, 2); return }
+            let ph = PairingHost()
+            guard let reply = ph.handleStep1(p) else { return }
+            link.pairing = ph
+            link.send([Wire.encode(PacketHeader(type: .pair), payload: reply)], droppable: false)
+        } else if step == 3 {
+            guard let ph = link.pairing, ph.code == nil else { return }       // duplicates are ignored
+            guard ph.handleStep3(p) else { link.pairing = nil; sendPairResult(link, 3); return }
+            if let old = pendingPair { sendPairResult(old.link, 3); old.link.pairing = nil }
+            pendingPair = (link, ph)
+            let name = ph.deviceName
+            DispatchQueue.main.async { self.onPairRequest?(name) }
+        }
+    }
+
+    /// The user typed the code shown on the device. Returns true if it was right (the device is now paired).
+    func submitPairCode(_ typed: String) -> Bool {
+        var ok = false
+        queue.sync {
+            guard let pending = pendingPair, let code = pending.host.code, let secret = pending.host.secret else { return }
+            pendingPair = nil
+            pending.link.pairing = nil
+            let digits = typed.filter { $0.isASCII && $0.isNumber }
+            ok = digits == code
+            if ok {
+                pairFailures = 0
+                PairedStore.add(name: pending.host.deviceName, secret: secret)
+                sendPairResult(pending.link, 0)
+            } else {
+                pairFailures += 1
+                if pairFailures >= 3 { lockedUntil = Date().addingTimeInterval(60); pairFailures = 0 }
+                sendPairResult(pending.link, 1)
+            }
+        }
+        DispatchQueue.main.async { self.onPairResolved?() }
+        return ok
+    }
+
+    func cancelPairing() {
+        queue.sync {
+            if let pending = pendingPair { sendPairResult(pending.link, 3); pending.link.pairing = nil }
+            pendingPair = nil
+        }
+        DispatchQueue.main.async { self.onPairResolved?() }
     }
 
     private func sendSecure(_ link: HostLink, _ packets: [Data], droppable: Bool) {

@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-/// Pairing codes (10 raw bytes) stored per host in the iOS Keychain.
+/// Long-term pairing secrets (32 bytes) stored per host in the iOS Keychain.
 enum PairingKeychain {
     private static let service = "dev.lumen.client.pairing"
 
@@ -17,7 +17,7 @@ enum PairingKeychain {
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
         guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data, data.count == 10 else { return nil }
+              let data = out as? Data, data.count == 32 else { return nil }
         return data
     }
 

@@ -11,7 +11,7 @@ struct LumenHostApp: App {
         WindowGroup {
             HostView()
                 .environmentObject(host)
-                .frame(minWidth: 460, minHeight: 640)
+                .frame(minWidth: 460, minHeight: 560)
         }
         .windowResizability(.contentSize)
     }
@@ -35,7 +35,9 @@ final class HostController: ObservableObject {
     @Published var screenAllowed = false
     @Published var accessibilityAllowed = false
     @Published var extended = false
-    @Published var pairingCode = ""
+    @Published var pairRequestFrom: String?
+    @Published var pairInput = ""
+    @Published var pairMessage = ""
     @Published var addresses: [String] = []
 
     private let pipeline = StreamPipeline()
@@ -44,7 +46,11 @@ final class HostController: ObservableObject {
     init() {
         refreshDisplays()
         refreshPermissions()
-        pairingCode = PairingCode.format(pipeline.pairingKey)
+        pipeline.onPairRequest = { [weak self] name in
+            self?.pairInput = ""; self?.pairMessage = ""; self?.pairRequestFrom = name
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        pipeline.onPairResolved = { [weak self] in self?.pairRequestFrom = nil }
         addresses = Self.localAddresses()
         pipeline.onMode = { [weak self] e in Task { @MainActor in self?.extended = e } }
         pipeline.onStatus = { [weak self] s in Task { @MainActor in self?.status = s } }
@@ -61,7 +67,12 @@ final class HostController: ObservableObject {
         pipeline.setMode(extend: extend)
     }
 
-    func newCode() { pairingCode = PairingCode.format(pipeline.newPairingKey()) }
+    func submitPair() {
+        let ok = pipeline.submitPairCode(pairInput)
+        pairMessage = ok ? "Paired." : "Wrong code. Start pairing again on the device."
+    }
+
+    func cancelPair() { pipeline.cancelPairing(); pairMessage = "" }
 
     func refreshAddresses() { addresses = Self.localAddresses() }
 
@@ -169,27 +180,24 @@ struct HostView: View {
                 .frame(maxWidth: .infinity, alignment: .leading).padding(4)
             }
 
-            GroupBox("Pairing code (encryption)") {
-                HStack {
-                    Text(host.pairingCode).font(.system(.title3, design: .monospaced)).textSelection(.enabled)
-                    Spacer()
-                    Button("New code") { host.newCode() }
-                }
-                .padding(4)
-                Text("Enter this code once in the app. Everything streamed is encrypted with it.").font(.caption).foregroundStyle(.secondary)
-            }
-
-            GroupBox("Screen mode") {
+            GroupBox("Pairing (everything is encrypted)") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Picker("", selection: Binding(get: { host.extended }, set: { host.setMode(extend: $0) })) {
-                        Text("Mirror").tag(false)
-                        Text("Extend").tag(true)
+                    if let name = host.pairRequestFrom {
+                        Text("\"\(name)\" wants to pair. Type the 5-digit code shown on it:").font(.callout)
+                        HStack {
+                            TextField("12345", text: $host.pairInput)
+                                .font(.system(.title3, design: .monospaced)).frame(width: 110)
+                                .onSubmit { host.submitPair() }
+                            Button("Pair") { host.submitPair() }.keyboardShortcut(.defaultAction)
+                            Button("Cancel") { host.cancelPair() }
+                        }
+                    } else {
+                        Text(host.pairMessage.isEmpty ? "Paired devices: \(PairedStore.all().count). A new iPhone/iPad shows a 5-digit code when it connects." : host.pairMessage)
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    .pickerStyle(.segmented).labelsHidden()
-                    Text(host.extended ? "Extend: the iPad is an additional screen (virtual display)." : "Mirror: the iPad shows the display chosen below.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Forget all paired devices") { PairedStore.removeAll(); host.pairMessage = "" }
                 }
-                .padding(4)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(4)
             }
 
             GroupBox("Display to stream") {

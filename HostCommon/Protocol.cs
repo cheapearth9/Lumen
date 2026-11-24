@@ -4,7 +4,7 @@ namespace Lumen;
 
 // Wire protocol shared with Shared/Protocol.swift. Keep both in sync.
 
-public enum PacketType : byte { Hello = 1, Welcome = 2, Video = 3, Input = 4, KeyframeRequest = 5, Ping = 6, Bye = 7, Status = 8, Discover = 9, Announce = 10, Handshake = 11, Audio = 12 }
+public enum PacketType : byte { Hello = 1, Welcome = 2, Video = 3, Input = 4, KeyframeRequest = 5, Ping = 6, Bye = 7, Status = 8, Discover = 9, Announce = 10, Handshake = 11, Audio = 12, Pair = 13 }
 
 public static class HostPlatformId { public const byte Mac = 1, Windows = 2, Linux = 3; }
 
@@ -49,7 +49,7 @@ public static class Wire
         h = default; payload = default;
         if (d.Length < HeaderSize) return false;
         if (BinaryPrimitives.ReadUInt16BigEndian(d.AsSpan(0)) != Magic) return false;
-        if (d[2] < 1 || d[2] > 12) return false;
+        if (d[2] < 1 || d[2] > 13) return false;
         h.Type = (PacketType)d[2];
         h.Flags = d[3];
         h.Id = BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(4));

@@ -33,7 +33,10 @@ final class StreamPipeline: @unchecked Sendable {
     private(set) var modeOverride: Bool?
     private var lastClientExtend: Bool?
     var onMode: ((Bool) -> Void)?
-    var pairingKey: Data { server.pairingKey }
+    var onPairRequest: ((String) -> Void)? { get { server.onPairRequest } set { server.onPairRequest = newValue } }
+    var onPairResolved: (() -> Void)? { get { server.onPairResolved } set { server.onPairResolved = newValue } }
+    func submitPairCode(_ code: String) -> Bool { server.submitPairCode(code) }
+    func cancelPairing() { server.cancelPairing() }
     var onStatus: ((String) -> Void)?
     var onClient: ((Bool) -> Void)?
 
@@ -72,12 +75,6 @@ final class StreamPipeline: @unchecked Sendable {
             self.modeOverride = extend
             if let h = self.active { self.active = nil; self.begin(h) } else { self.onMode?(extend) }
         }
-    }
-
-    func newPairingKey() -> Data {
-        let k = PairingStore.regenerate()
-        server.pairingKey = k
-        return k
     }
 
     func stop() {

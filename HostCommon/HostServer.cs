@@ -12,6 +12,8 @@ public interface ILink
     void Close();
     /// Encryption state of this link (null until a handshake arrived).
     SecureSession? Session { get; set; }
+    /// Pairing attempt in progress on this link.
+    PairingHost? Pairing { get; set; }
 }
 
 /// Wi-Fi / Ethernet: one datagram per packet.
@@ -21,6 +23,7 @@ internal sealed class UdpLink : ILink
     public readonly EndPoint Remote;
     public DateTime LastSeen = DateTime.UtcNow;
     public SecureSession? Session { get; set; }
+    public PairingHost? Pairing { get; set; }
 
     public UdpLink(Socket sock, EndPoint remote) { _sock = sock; Remote = remote; }
 
@@ -49,6 +52,7 @@ internal sealed class TcpLink : ILink
 
     public readonly DateTime Created = DateTime.UtcNow;
     public SecureSession? Session { get; set; }
+    public PairingHost? Pairing { get; set; }
     public Action<byte[]>? OnPacket;
     public Action? OnClosed;
 
@@ -153,8 +157,27 @@ public sealed class HostServer : IDisposable
     /// Shown on the iOS app's list; sent in Announce replies.
     public string ServerName { get; set; } = Environment.MachineName;
     public byte PlatformId { get; set; }
-    /// Secret both sides must know (see PairingCode). Packets other than discover/handshake are only accepted encrypted.
-    public byte[] PairingKey { get; set; } = PairingCode.LoadOrCreate();
+    /// Devices that have paired with this computer. Everything except discover / pairing / handshake needs a session keyed by one of them.
+    public PairedStore Paired { get; } = new();
+
+    /// A device wants to pair: show its name and ask the user for the 5-digit code displayed on the device.
+    public event Action<PairRequest>? PairRequested;
+    /// The pairing request was resolved or abandoned (hide the prompt).
+    public event Action? PairResolved;
+
+    public sealed class PairRequest
+    {
+        public string DeviceName { get; init; } = "";
+        internal Func<string, bool> SubmitImpl = _ => false;
+        internal Action CancelImpl = () => { };
+        /// Returns true when the typed code was right (the device is then paired).
+        public bool Submit(string typed) => SubmitImpl(typed);
+        public void Cancel() => CancelImpl();
+    }
+
+    private PairRequest? _pendingRequest;
+    private int _pairFailures;
+    private DateTime _lockedUntil;
 
     public event Action<HelloInfo>? Hello;
     public event Action<InputEvent>? Input;
@@ -298,16 +321,86 @@ public sealed class HostServer : IDisposable
             if (!Wire.TryDecode(raw, out var ph, out var pp)) return;
             if (ph.Type == PacketType.Handshake)
             {
-                var s = SecureSession.Accept(pp.ToArray(), PairingKey, out var reply);
+                var hello = pp.ToArray();
+                var id = SecureSession.KeyIdOf(hello);
+                if (id == null) return;
+                var secret = Paired.SecretFor(id);
+                if (secret == null)
+                {
+                    link.Send(new[] { Wire.Simple(PacketType.Handshake, 0, SecureSession.PairingRequiredReply) }, false);
+                    return;
+                }
+                var s = SecureSession.Accept(hello, secret, out var reply);
                 if (s == null) return;
                 link.Session = s;
                 link.Send(new[] { Wire.Simple(PacketType.Handshake, 0, reply) }, false);
                 return;
             }
+            if (ph.Type == PacketType.Pair) { HandlePair(pp.ToArray(), link); return; }
             if (ph.Type != PacketType.Discover) return;
         }
         HandlePlain(data, link);
     }
+
+    // MARK: Pairing (see Crypto.cs)
+
+    private void HandlePair(byte[] p, ILink link)
+    {
+        if (p.Length < 1) return;
+        if (p[0] == 1)
+        {
+            if (DateTime.UtcNow < _lockedUntil) { SendPairResult(link, 2); return; }
+            var ph = new PairingHost();
+            var reply = ph.HandleStep1(p);
+            if (reply == null) return;
+            link.Pairing = ph;
+            link.Send(new[] { Wire.Simple(PacketType.Pair, 0, reply) }, false);
+        }
+        else if (p[0] == 3)
+        {
+            var ph = link.Pairing;
+            if (ph == null) return;
+            if (ph.Code != null) return;                     // duplicate step 3 (the client resends until it hears back)
+            if (!ph.HandleStep3(p)) { link.Pairing = null; SendPairResult(link, 3); return; }
+
+            PairRequest? previous;
+            var req = new PairRequest { DeviceName = ph.DeviceName };
+            req.SubmitImpl = typed =>
+            {
+                var digits = new string(typed.Where(char.IsAsciiDigit).ToArray());
+                bool ok = digits.Length == 5 && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                    System.Text.Encoding.ASCII.GetBytes(digits), System.Text.Encoding.ASCII.GetBytes(ph.Code!));
+                lock (_gate) { if (_pendingRequest == req) _pendingRequest = null; }
+                link.Pairing = null;
+                if (ok)
+                {
+                    _pairFailures = 0;
+                    Paired.Add(ph.DeviceName, ph.Secret!);
+                    SendPairResult(link, 0);
+                }
+                else
+                {
+                    if (++_pairFailures >= 3) { _lockedUntil = DateTime.UtcNow.AddSeconds(60); _pairFailures = 0; }
+                    SendPairResult(link, 1);
+                }
+                PairResolved?.Invoke();
+                return ok;
+            };
+            req.CancelImpl = () =>
+            {
+                lock (_gate) { if (_pendingRequest == req) _pendingRequest = null; }
+                link.Pairing = null;
+                SendPairResult(link, 3);
+                PairResolved?.Invoke();
+            };
+            lock (_gate) { previous = _pendingRequest; _pendingRequest = req; }
+            previous?.Cancel();
+            PairRequested?.Invoke(req);
+        }
+    }
+
+    private static void SendPairResult(ILink link, byte result) =>
+        link.Send(new[] { Wire.Simple(PacketType.Pair, 0, new byte[] { 4, result }) }, false);
 
     /// Seals packets with the link's session (dropping them if there is none) and sends.
     private static void SendSecure(ILink link, IReadOnlyList<byte[]> packets, bool droppable)

@@ -1,34 +1,58 @@
 import UIKit
 
-/// Asks the user for a host's pairing code with a text-field alert.
+/// Shows the 5-digit pairing code on the device. The user types it on the computer; nothing is entered here.
 enum PairingPrompt {
-    /// `completion` receives the parsed key, or nil when the user cancels. Must be called on the main thread.
-    static func present(host: String, note: String?, completion: @escaping (Data?) -> Void) {
-        guard let top = topViewController(), !(top is UIAlertController) else { completion(nil); return }
-        var message = "Enter the 5-digit pairing code shown by Lumen Host on \(host)."
-        if let note { message = note + "\n" + message }
-        let alert = UIAlertController(title: "Pairing code", message: message, preferredStyle: .alert)
-        alert.addTextField { tf in
-            tf.placeholder = "12345"
-            tf.autocapitalizationType = .none
-            tf.autocorrectionType = .no
-            tf.spellCheckingType = .no
-            tf.keyboardType = .numberPad
-            tf.clearButtonMode = .whileEditing
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completion(nil) })
-        alert.addAction(UIAlertAction(title: "Pair", style: .default) { [weak alert] _ in
-            let text = alert?.textFields?.first?.text ?? ""
-            if let key = PairingCode.parse(text) {
-                completion(key)
-            } else {
-                // Let the dismissed alert finish leaving the screen before presenting the next one.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    present(host: host, note: "That is not a valid pairing code.", completion: completion)
+    private static var current: UIAlertController?
+    private static var wanted = false
+
+    /// Shows the code with a Cancel button. Must be called on the main thread.
+    static func show(host: String, code: String, onCancel: @escaping () -> Void) {
+        dismiss()
+        wanted = true
+        present(host: host, code: code, onCancel: onCancel, attempts: 6)
+    }
+
+    /// Removes the prompt (if any). Must be called on the main thread.
+    static func dismiss() {
+        wanted = false
+        if let a = current { a.dismiss(animated: true) }
+        current = nil
+    }
+
+    /// A simple "OK" alert for a failure such as "Wrong code. Try pairing again."
+    static func showFailure(_ text: String) {
+        guard let top = topViewController(), !(top is UIAlertController) else { return }
+        let alert = UIAlertController(title: "Pairing", message: text, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        top.present(alert, animated: true)
+    }
+
+    private static func present(host: String, code: String, onCancel: @escaping () -> Void, attempts: Int) {
+        guard wanted else { return }
+        guard let top = topViewController(), !(top is UIAlertController) else {
+            if attempts > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    present(host: host, code: code, onCancel: onCancel, attempts: attempts - 1)
                 }
             }
+            return
+        }
+        let alert = UIAlertController(title: "Pair with \(host)", message: nil, preferredStyle: .alert)
+        let text = NSMutableAttributedString(string: "On \(host), type this code when asked:\n\n",
+                                             attributes: [.font: UIFont.systemFont(ofSize: 13), .foregroundColor: UIColor.label])
+        text.append(NSAttributedString(string: code,
+                                       attributes: [.font: UIFont.monospacedSystemFont(ofSize: 44, weight: .bold),
+                                                    .foregroundColor: UIColor.label]))
+        alert.setValue(text, forKey: "attributedMessage")
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+            current = nil
+            wanted = false
+            onCancel()
         })
-        top.present(alert, animated: true)
+        current = alert
+        top.present(alert, animated: true) {
+            if !wanted && current === alert { alert.dismiss(animated: false); current = nil }
+        }
     }
 
     private static func topViewController() -> UIViewController? {

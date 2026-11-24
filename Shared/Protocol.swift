@@ -18,6 +18,7 @@ enum PacketType: UInt8 {
     case discover = 9       // client -> host : "who is out there?" (unicast subnet scan)
     case announce = 10      // host -> client : platform byte + UTF-8 host name
     case handshake = 11     // key exchange, the only packet type besides discover/announce that is sent unencrypted
+    case pair = 13          // both: device pairing (unencrypted, see Crypto.swift)
     case audio = 12         // host -> client : 240 frames of 48 kHz stereo s16le PCM (960 bytes)
 }
 

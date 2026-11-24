@@ -18,7 +18,12 @@ public sealed class MainForm : Form
     private readonly Button _mirror = new() { Text = "Mirror", AutoSize = true, Padding = new Padding(10, 3, 10, 3) };
     private readonly Button _extend = new() { Text = "Extend", AutoSize = true, Padding = new Padding(10, 3, 10, 3) };
     private readonly Label _modeNote = new() { AutoSize = true, MaximumSize = new Size(400, 0), ForeColor = SystemColors.GrayText };
-    private readonly TextBox _code = new() { ReadOnly = true, Width = 230, Font = new Font("Consolas", 12f), BorderStyle = BorderStyle.FixedSingle, BackColor = SystemColors.Window };
+    private readonly Label _pairInfo = new() { AutoSize = true, MaximumSize = new Size(400, 0) };
+    private readonly FlowLayoutPanel _pairBox = new() { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
+    private readonly TextBox _pairInput = new() { Width = 110, MaxLength = 8, Font = new Font("Consolas", 14f) };
+    private readonly Button _pairOk = new() { Text = "Pair", AutoSize = true };
+    private readonly Button _pairCancel = new() { Text = "Cancel", AutoSize = true };
+    private HostServer.PairRequest? _request;
     private bool _running, _connected;
     private int _tick;
 
@@ -56,13 +61,32 @@ public sealed class MainForm : Form
             if (first != null) { try { Clipboard.SetText(first); } catch { } }
         };
 
-        _code.Text = PairingCode.Format(_s.PairingKey);
-        var regen = new Button { Text = "New code", AutoSize = true };
-        regen.Click += (_, _) => _code.Text = PairingCode.Format(_s.NewPairingKey());
-        var codeRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
-        codeRow.Controls.Add(_code);
-        codeRow.Controls.Add(regen);
-        var codeLabel = new Label { Text = "Pairing code (enter it once in the app; all traffic is encrypted)", AutoSize = true, Margin = new Padding(0, 12, 0, 2) };
+        var codeLabel = new Label { Text = "Pairing (all traffic is encrypted)", AutoSize = true, Margin = new Padding(0, 12, 0, 2) };
+        var forget = new Button { Text = "Forget all paired devices", AutoSize = true };
+        forget.Click += (_, _) => { _s.Paired.RemoveAll(); UpdatePaired(); };
+        _pairInfo.Text = "";
+        var codeRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        codeRow.Controls.Add(_pairInfo);
+        codeRow.Controls.Add(_pairBox);
+        codeRow.Controls.Add(forget);
+        _pairBox.Visible = false;
+        _pairOk.Click += (_, _) => SubmitPair();
+        _pairCancel.Click += (_, _) => { _request?.Cancel(); };
+        _pairInput.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { SubmitPair(); e.SuppressKeyPress = true; } };
+        _pairBox.Controls.Add(_pairInput);
+        _pairBox.Controls.Add(_pairOk);
+        _pairBox.Controls.Add(_pairCancel);
+        _s.PairRequested += req => Ui(() =>
+        {
+            _request = req;
+            _pairInfo.Text = $"\"{req.DeviceName}\" wants to pair. Type the 5-digit code shown on it:";
+            _pairBox.Visible = true;
+            _pairInput.Text = "";
+            _pairInput.Focus();
+            Activate();
+        });
+        _s.PairResolved += () => Ui(() => { _request = null; _pairBox.Visible = false; UpdatePaired(); });
+        UpdatePaired();
 
         var modeRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
         modeRow.Controls.Add(_mirror);
@@ -84,7 +108,7 @@ public sealed class MainForm : Form
                     Process.Start(new ProcessStartInfo("powershell.exe",
                         "-NoProfile -Command \"winget install --id=VirtualDrivers.Virtual-Display-Driver -e --silent --accept-package-agreements --accept-source-agreements; Read-Host 'Done. Press Enter to close'\"")
                         { UseShellExecute = true, Verb = "runas" });
-                _modeNote.Text = "Installing the virtual display driver… when it finishes, press Extend.";
+                _modeNote.Text = "Installing the virtual display driver… when it finishes, choose Extend on the iPad.";
                 vdd.Visible = false;
             }
             catch { _modeNote.Text = "Could not start the installer (needs administrator rights)."; }
@@ -117,8 +141,6 @@ public sealed class MainForm : Form
         panel.Controls.Add(copy);
         panel.Controls.Add(codeLabel);
         panel.Controls.Add(codeRow);
-        panel.Controls.Add(new Label { Text = "Screen mode", AutoSize = true, Margin = new Padding(0, 12, 0, 2) });
-        panel.Controls.Add(modeRow);
         panel.Controls.Add(vdd);
         panel.Controls.Add(new Label { Text = "Display to stream", AutoSize = true, Margin = new Padding(0, 12, 0, 2) });
         panel.Controls.Add(_display);
@@ -153,11 +175,24 @@ public sealed class MainForm : Form
         FormClosing += (_, _) => { _timer.Stop(); _s.Dispose(); };
     }
 
+    private void SubmitPair()
+    {
+        var r = _request;
+        if (r == null) return;
+        bool ok = r.Submit(_pairInput.Text);
+        _pairInfo.Text = ok ? "Paired." : "Wrong code. Start pairing again on the device.";
+    }
+
+    private void UpdatePaired()
+    {
+        if (_request == null) _pairInfo.Text = $"Paired devices: {_s.Paired.All().Count}. A new device shows a 5-digit code when it connects.";
+    }
+
     private void ShowMode(bool extended)
     {
         _mirror.Font = new Font(_mirror.Font, extended ? FontStyle.Regular : FontStyle.Bold);
         _extend.Font = new Font(_extend.Font, extended ? FontStyle.Bold : FontStyle.Regular);
-        _modeNote.Text = extended ? "Extend: the iPad shows an additional screen." : "Mirror: the iPad shows your main screen. Extend uses a second or virtual display.";
+        _modeNote.Text = "";
     }
 
     private void RefreshIps()

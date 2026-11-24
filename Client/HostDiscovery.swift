@@ -154,7 +154,7 @@ final class SubnetScanner {
 struct RecentHost: Codable, Hashable, Identifiable {
     var name: String
     var address: String
-    var key: String          // pairing-code key (host name, or the typed address)
+    var key: String          // pairing-secret key (host name, or the typed address)
     var id: String { address }
 }
 

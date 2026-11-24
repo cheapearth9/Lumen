@@ -2,6 +2,7 @@ import Foundation
 import Network
 import CoreMedia
 import Combine
+import UIKit
 
 /// One computer in the "Computers on your network" list (Bonjour and/or unicast scan, merged).
 struct DiscoveredHost: Identifiable, Hashable {
@@ -34,7 +35,7 @@ final class StreamClient: ObservableObject {
     private struct Target {
         var name: String
         var address: String?
-        var key: String        // keychain account (pairing code is stored per host)
+        var key: String        // keychain account (the pairing secret is stored per host)
     }
 
     private struct BonjourEntry {
@@ -89,7 +90,14 @@ final class StreamClient: ObservableObject {
     private var handshakeRetried = false
     private var replyAt: Date?
     private var sealedOK = false
-    private var awaitingUser = false
+    // Pairing (while active the watchdog is paused; the host waits for the user to type the code)
+    private var pairingActive = false
+    private var pairing: PairingClient?
+    private var pairTries = 0
+    private var pairStep1At = Date.distantPast
+    private var pairStep3: Data?
+    private var pairStep3At = Date.distantPast
+    private var pairStep3SentAt = Date.distantPast
 
     private var reassembler = Reassembler()
     private var formatDesc: CMVideoFormatDescription?
@@ -307,7 +315,7 @@ final class StreamClient: ObservableObject {
         connect(address: recent.address, name: recent.name, key: recent.key, hello: hello)
     }
 
-    /// Manual IP entry: the pairing code is stored under the typed address.
+    /// Manual IP entry: the pairing secret is stored under the typed address.
     func connect(host: String, hello: HelloInfo) {
         let a = host.trimmingCharacters(in: .whitespaces)
         connect(address: a, name: a, key: a, hello: hello)
@@ -387,7 +395,9 @@ final class StreamClient: ObservableObject {
         handshakeRetried = false
         replyAt = nil
         sealedOK = false
-        awaitingUser = false
+        pairingActive = false
+        pairing = nil
+        pairStep3 = nil
         gotWelcome = false
         gotFirstFrame = false
         needKey = true
@@ -423,7 +433,7 @@ final class StreamClient: ObservableObject {
         if let k = PairingKeychain.load(host: target.key) {
             pairingKey = k
         } else {
-            askForCode(note: nil, wrong: false)
+            startPairing()
         }
     }
 
@@ -433,7 +443,10 @@ final class StreamClient: ObservableObject {
         connReady = false
         session = nil
         handshakeDone = false
-        awaitingUser = false
+        if pairingActive { dismissPrompt() }
+        pairingActive = false
+        pairing = nil
+        pairStep3 = nil
         gotWelcome = false
         hello = nil
         isCable = false
@@ -463,53 +476,114 @@ final class StreamClient: ObservableObject {
 
     // MARK: Pairing / handshake
 
-    /// Asks for the pairing code (nothing stored yet, or the stored one did not work).
-    private func askForCode(note: String?, wrong: Bool) {
-        awaitingUser = true
-        let myEpoch = epoch
-        let name = target.name
-        let key = target.key
-        DispatchQueue.main.async {
-            PairingPrompt.present(host: name, note: note) { [weak self] code in
-                self?.queue.async {
-                    guard let self, self.epoch == myEpoch, self.conn != nil else { return }
-                    self.awaitingUser = false
-                    if let code {
-                        PairingKeychain.save(code, host: key)
-                        self.pairingKey = code
-                        self.session = nil
-                        self.handshakeDone = false
-                        self.handshakeRetried = false
-                        self.replyAt = nil
-                        self.sealedOK = false
-                        self.connectedAt = Date()
-                        self.lastRx = Date()
-                        self.setState(.connecting)
-                        self.beginHandshake()
-                    } else if wrong {
-                        if self.isCable { self.suppressCable = true; DispatchQueue.main.async { self.cablePaused = true } }
-                        self.fail("Wrong pairing code")
-                    } else {
-                        if self.isCable { self.suppressCable = true; DispatchQueue.main.async { self.cablePaused = true } }
-                        self.teardown(notify: true)
-                    }
-                }
-            }
-        }
+    private func dismissPrompt() {
+        DispatchQueue.main.async { PairingPrompt.dismiss() }
     }
 
-    private func wrongCode() {
-        PairingKeychain.delete(host: target.key)
+    /// Enters pairing mode: no sealed session, the host shows nothing; we send step 1 once the connection is ready.
+    private func startPairing() {
+        pairingActive = true
         pairingKey = nil
         session = nil
         handshakeDone = false
-        setState(.failed("Wrong pairing code"))
-        askForCode(note: "Wrong pairing code.", wrong: true)
+        replyAt = nil
+        sealedOK = false
+        pairing = nil
+        pairTries = 0
+        pairStep3 = nil
+        lastRx = Date()
+        connectedAt = Date()
+        setState(.connecting)
+        sendPairStep1()
+    }
+
+    private func sendPair(_ payload: Data) {
+        rawSend(Wire.encode(PacketHeader(type: .pair), payload: payload))
+    }
+
+    private func sendPairStep1() {
+        guard connReady, pairingActive else { return }
+        let p = PairingClient()
+        pairing = p
+        pairTries += 1
+        pairStep1At = Date()
+        sendPair(p.start(deviceName: UIDevice.current.name))
+    }
+
+    private func failPairing(_ msg: String) {
+        dismissPrompt()
+        pairingActive = false
+        pairing = nil
+        pairStep3 = nil
+        if isCable { suppressCable = true; DispatchQueue.main.async { self.cablePaused = true } }
+        fail(msg)
+    }
+
+    private func cancelPairing() {
+        dismissPrompt()
+        pairingActive = false
+        send(.bye)
+        if isCable { suppressCable = true; DispatchQueue.main.async { self.cablePaused = true } }
+        teardown(notify: true)
+    }
+
+    private func handlePair(_ payload: Data) {
+        guard pairingActive, let p = pairing, let step = payload.first else { return }
+        switch step {
+        case 2:
+            guard pairStep3 == nil, let s3 = p.handleStep2(payload), let code = p.code else { return }
+            pairStep3 = s3
+            pairStep3At = Date()
+            pairStep3SentAt = Date()
+            sendPair(s3)
+            let myEpoch = epoch
+            let name = target.name
+            DispatchQueue.main.async {
+                PairingPrompt.show(host: name, code: code) { [weak self] in
+                    self?.queue.async {
+                        guard let self, self.epoch == myEpoch, self.conn != nil else { return }
+                        self.cancelPairing()
+                    }
+                }
+            }
+        case 4:
+            guard pairStep3 != nil, payload.count >= 2 else { return }
+            switch payload[payload.startIndex + 1] {
+            case 0:
+                guard let secret = p.secret else { return }
+                PairingKeychain.save(secret, host: target.key)
+                dismissPrompt()
+                pairingActive = false
+                pairing = nil
+                pairStep3 = nil
+                pairingKey = secret
+                session = nil
+                handshakeDone = false
+                handshakeRetried = false
+                replyAt = nil
+                sealedOK = false
+                connectedAt = Date()
+                lastRx = Date()
+                setState(.connecting)
+                beginHandshake()
+            case 1: failPairing("Wrong code. Try pairing again.")
+            case 2: failPairing("Host is busy or temporarily locked, try again in a minute")
+            default: failPairing("Pairing failed")
+            }
+        default:
+            break
+        }
+    }
+
+    /// The stored secret did not work (host forgot this device or was reset): pair again.
+    private func restartPairing() {
+        PairingKeychain.delete(host: target.key)
+        startPairing()
     }
 
     /// Starts (or restarts, with fresh keys) the key exchange. Idempotent while a session already exists.
     private func beginHandshake() {
-        guard connReady, !awaitingUser, session == nil, let key = pairingKey else { return }
+        guard connReady, !pairingActive, session == nil, let key = pairingKey else { return }
         let (s, clientHello) = SecureSession.client(pairingKey: key)
         session = s
         handshakeDone = false
@@ -540,9 +614,23 @@ final class StreamClient: ObservableObject {
     private func onTick() {
         guard conn != nil else { return }
         let now = Date()
-        if awaitingUser {
+        if pairingActive && connReady {
             lastRx = now
             connectedAt = now
+            if pairStep3 == nil {
+                if pairing == nil {
+                    sendPairStep1()
+                } else if now.timeIntervalSince(pairStep1At) > 4.0 {
+                    if pairTries >= 3 { failPairing("Could not reach the host") } else { sendPairStep1() }
+                }
+            } else if let s3 = pairStep3 {
+                if now.timeIntervalSince(pairStep3At) > 125 {
+                    failPairing("Pairing timed out")
+                } else if !isCable && now.timeIntervalSince(pairStep3SentAt) > 1.0 {
+                    pairStep3SentAt = now
+                    sendPair(s3)
+                }
+            }
             return
         }
         tick += 1
@@ -568,7 +656,7 @@ final class StreamClient: ObservableObject {
                         return
                     }
                     if waited > 4.0 {
-                        wrongCode()
+                        restartPairing()
                         return
                     }
                 }
@@ -656,8 +744,16 @@ final class StreamClient: ObservableObject {
             sealedOK = true
             lastRx = Date()
             handle(h, payload)
-        } else if let (h, payload) = Wire.decode(raw), h.type == .handshake {
-            handleHandshake(payload)
+        } else if let (h, payload) = Wire.decode(raw) {
+            if h.type == .handshake {
+                if session != nil, !handshakeDone, !pairingActive, SecureSession.isPairingRequired(payload) {
+                    restartPairing()
+                } else {
+                    handleHandshake(payload)
+                }
+            } else if h.type == .pair {
+                handlePair(payload)
+            }
         }
     }
 
