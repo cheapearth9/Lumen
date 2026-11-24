@@ -176,7 +176,11 @@ public sealed class HostCore : IDisposable
             src = _p.SourceSize;
             var (w, hh) = Fit(src.W, src.H, h.Width, h.Height);
             int fps = Math.Clamp((int)h.Fps, 15, 120);
-            int bps = Math.Max(2, (int)h.BitrateMbps) * 1_000_000;
+            // Wi-Fi cannot carry more than about 80 Mbps of UDP without loss (each lost packet freezes the picture until the next keyframe).
+            int mbps = Math.Max(2, (int)h.BitrateMbps);
+            int cap = _server.ClientIsCable ? 150 : 80;
+            if (mbps > cap) { Say($"Bitrate limited to {cap} Mbps for this connection type."); mbps = cap; }
+            int bps = mbps * 1_000_000;
             _size = (w, hh, fps);
             _active = h;
             _gotKey = false;
@@ -197,6 +201,7 @@ public sealed class HostCore : IDisposable
             ff.Dropped += _server.SkipFrame;
             ff.Attempt += name => Say("Starting: " + name);
             ff.Failed += msg => Fail(msg);
+            StartStatLog();
             ff.Start(_p.FfmpegPath, candidates);
             _ff = ff;
 
@@ -243,13 +248,30 @@ public sealed class HostCore : IDisposable
         try { _audio?.Dispose(); } catch { }
         _audio = null;
         try { _p.EndSession(); } catch { }
+        _statLog?.Dispose(); _statLog = null;
         var ff = _ff;
         _ff = null;
         if (ff != null) { ff.Frame -= OnFrame; ff.Dispose(); }
     }
 
+    private System.Threading.Timer? _statLog;
+    private long _logBytes; private int _logFrames; private long _logKeys; private long _logDropPrev;
+
+    private void StartStatLog()
+    {
+        _statLog?.Dispose();
+        _statLog = new System.Threading.Timer(_ =>
+        {
+            long b = Interlocked.Exchange(ref _logBytes, 0); int f = Interlocked.Exchange(ref _logFrames, 0);
+            long drops = _server.DroppedFrames;
+            HostLog.Write($"stats: {f / 5.0:0.0} fps, {b * 8 / 5e6:0.0} Mbps encoded, dropped {drops - _logDropPrev} frames (cable backlog)");
+            _logDropPrev = drops;
+        }, null, 5000, 5000);
+    }
+
     private void OnFrame(byte[] avcc, bool key, List<byte[]> sets)
     {
+        Interlocked.Add(ref _logBytes, avcc.Length); Interlocked.Increment(ref _logFrames);
         if (!_gotKey)
         {
             if (!key) return;                    // the client can only start on a keyframe

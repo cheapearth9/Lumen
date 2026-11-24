@@ -127,13 +127,13 @@ public sealed class LinuxPlatform : IPlatformHost
     private static List<string> Codec(LinuxEncoder k, int fps, int bps)
     {
         string rate = bps.ToString(), buf = Math.Max(bps / 10, 100_000).ToString();
-        var c = new List<string> { "-b:v", rate, "-maxrate", rate, "-bufsize", buf, "-g", fps.ToString() };
+        var c = new List<string> { "-b:v", rate, "-maxrate", rate, "-bufsize", buf, "-g", Math.Max(fps / 2, 8).ToString() };
         List<string> s = k switch
         {
             LinuxEncoder.Vaapi => new() { "-c:v", "hevc_vaapi", "-bf", "0", "-async_depth", "1" },
             LinuxEncoder.Nvenc => new() { "-c:v", "hevc_nvenc", "-preset", "p1", "-tune", "ull", "-rc", "cbr", "-zerolatency", "1", "-bf", "0", "-forced-idr", "1" },
             _ => new() { "-c:v", "libx265", "-preset", "ultrafast", "-tune", "zerolatency",
-                         "-x265-params", $"keyint={fps}:min-keyint={fps}:bframes=0:rc-lookahead=0:scenecut=0:repeat-headers=1:log-level=error" }
+                         "-x265-params", $"keyint={Math.Max(fps / 2, 8)}:min-keyint={Math.Max(fps / 2, 8)}:bframes=0:rc-lookahead=0:scenecut=0:repeat-headers=1:log-level=error" }
         };
         s.AddRange(c);
         return s;

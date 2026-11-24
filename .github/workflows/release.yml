@@ -221,6 +221,20 @@ jobs:
           }
           Get-ChildItem dist/win/drivers/sudovda | Format-Table Name, Length
 
+      - name: Fetch ViGEmBus (virtual Xbox 360 controller driver)
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $h = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "lumen-ci" }
+          $rel = Invoke-RestMethod "https://api.github.com/repos/nefarius/ViGEmBus/releases/latest" -Headers $h
+          $asset = $rel.assets | Where-Object { $_.name -match '\.exe$' } | Select-Object -First 1
+          if (-not $asset) { throw "no ViGEmBus installer found" }
+          New-Item -ItemType Directory -Force dist/win/drivers/vigem | Out-Null
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile dist/win/drivers/vigem/ViGEmBus_Setup.exe -Headers $h
+          Get-ChildItem dist/win/drivers/vigem | Format-Table Name, Length
+
       - name: Verify bundled files
         shell: pwsh
         run: |

@@ -49,6 +49,7 @@ internal sealed class TcpLink : ILink
     private readonly object _lock = new();
     private int _pending;
     private bool _closed;
+    public long Dropped;
 
     public readonly DateTime Created = DateTime.UtcNow;
     public SecureSession? Session { get; set; }
@@ -109,7 +110,8 @@ internal sealed class TcpLink : ILink
         {
             // Back-pressure: skip whole video frames if the device can't keep up. The client sees the
             // gap in frame ids and waits for the next keyframe.
-            if (_closed || (droppable && _pending > 1_500_000)) return;
+            if (_closed) return;
+            if (droppable && _pending > 4_000_000) { Interlocked.Increment(ref Dropped); return; }
             _pending += size;
         }
 
@@ -515,8 +517,12 @@ public sealed class HostServer : IDisposable
         ILink? c;
         uint id;
         lock (_gate) { c = _client; if (c != null) id = ++_frameCounter; else return; }
-        SendSecure(c, Wire.Fragment(PacketType.Video, keyframe ? (byte)1 : (byte)0, id, timestampMs, payload), true);
+        // Keyframes are never dropped: losing one stalls the picture for a whole second.
+        SendSecure(c, Wire.Fragment(PacketType.Video, keyframe ? (byte)1 : (byte)0, id, timestampMs, payload), !keyframe);
     }
+
+    public bool ClientIsCable { get { lock (_gate) return _client is TcpLink; } }
+    public long DroppedFrames { get { lock (_gate) return (_client as TcpLink)?.Dropped ?? 0; } }
 
     /// A frame was lost before it could be sent: burn its id so the client notices the gap and waits for a keyframe.
     public void SkipFrame()

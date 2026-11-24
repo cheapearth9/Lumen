@@ -41,6 +41,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 Name: "vdd"; Description: "Install the SudoVDA virtual display driver (needed for Extend mode; adds the driver certificate to the trusted store)"; GroupDescription: "Optional:"; Flags: unchecked
+Name: "vigem"; Description: "Install the ViGEmBus driver (needed for game controller support)"; GroupDescription: "Optional:"; Flags: unchecked
 Name: "autostart"; Description: "Start Lumen Host with Windows"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
@@ -56,6 +57,7 @@ Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{cmd}"; Parameters: "/c ""{app}\drivers\sudovda\install.bat"""; WorkingDir: "{app}\drivers\sudovda"; Flags: runhidden waituntilterminated; StatusMsg: "Installing virtual display driver..."; Tasks: vdd; Check: DriverBundled
+Filename: "{app}\drivers\vigem\ViGEmBus_Setup.exe"; Parameters: "/qn /norestart"; Flags: waituntilterminated; StatusMsg: "Installing controller driver..."; Tasks: vigem; Check: VigemBundled
 ; Firewall rules (inbound UDP: 47900 = Lumen stream, 5353 = mDNS discovery). Delete first so reinstalls stay idempotent.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lumen Host UDP 47900"""; Flags: runhidden; StatusMsg: "Configuring firewall..."
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lumen Host UDP 5353"""; Flags: runhidden
@@ -71,4 +73,9 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 function DriverBundled: Boolean;
 begin
   Result := FileExists(ExpandConstant('{app}\drivers\sudovda\install.bat'));
+end;
+
+function VigemBundled: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\drivers\vigem\ViGEmBus_Setup.exe'));
 end;

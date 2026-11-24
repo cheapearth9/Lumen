@@ -36,6 +36,7 @@ public sealed class InputInjector
     private readonly HashSet<ushort> _heldKeys = new();
     private readonly HashSet<int> _heldButtons = new();
     private readonly object _lock = new();
+    private readonly GamepadBridge _pads = new();
 
     public void Configure(Rectangle monitor, Rectangle virtualScreen)
     {
@@ -74,6 +75,8 @@ public sealed class InputInjector
                 case InputKind.Touch:
                     Touch(e.A, e.B, e.C, e.D);
                     break;
+                case InputKind.Gamepad: _pads.Update(e); break;
+                case InputKind.GamepadPresence: _pads.Presence(e.A, e.B != 0); break;
             }
         }
     }
@@ -86,6 +89,7 @@ public sealed class InputInjector
             foreach (var b in _heldButtons.ToArray()) Button(b, false);
             foreach (var k in _heldKeys.ToArray()) Key(k, false);
             foreach (var id in _contacts.Keys.ToArray()) Touch(id, 3, 0, 0);
+            for (int i = 0; i < 4; i++) _pads.Presence(i, false);
         }
     }
 
@@ -122,6 +126,7 @@ public sealed class InputInjector
 
     private static bool _touchInit, _touchOk;
     private readonly Dictionary<int, POINTER_TOUCH_INFO> _contacts = new();
+    private readonly Dictionary<int, long> _downAt = new();
 
     /// True when Windows lets us inject touch (Windows 8 or newer).
     public static bool TouchAvailable
@@ -162,6 +167,16 @@ public sealed class InputInjector
         int px = _monitor.X + (int)Math.Round(nx / 65535.0 * (_monitor.Width - 1));
         int py = _monitor.Y + (int)Math.Round(ny / 65535.0 * (_monitor.Height - 1));
 
+        // A lost 'up' would make Windows reject the next 'down' for the same id: lift the stale contact first.
+        if (phase == 0 && _contacts.ContainsKey(id)) Touch(id, 3, 0, 0);
+        // Windows ignores a tap whose down and up arrive in the same instant, so keep them a few ms apart.
+        if (phase == 2 && _downAt.TryGetValue(id, out var t0))
+        {
+            int wait = 30 - (int)(Environment.TickCount64 - t0);
+            if (wait > 0) Thread.Sleep(wait);
+        }
+        if (phase == 0) _downAt[id] = Environment.TickCount64;
+
         var frame = new List<POINTER_TOUCH_INFO>();
         foreach (var key in _contacts.Keys.ToArray())
         {
@@ -185,7 +200,12 @@ public sealed class InputInjector
                 break;
         }
         frame.Add(me);
-        InjectTouchInput((uint)frame.Count, frame.ToArray());
+        if (!InjectTouchInput((uint)frame.Count, frame.ToArray()))
+        {
+            HostLog.Write($"touch injection failed (error {Marshal.GetLastWin32Error()}, phase {phase})");
+            _contacts.Clear(); _downAt.Clear();
+            return;
+        }
 
         if (phase >= 2) _contacts.Remove(id); else _contacts[id] = me;
     }

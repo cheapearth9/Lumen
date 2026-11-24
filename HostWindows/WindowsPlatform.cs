@@ -139,7 +139,7 @@ public sealed class WindowsPlatform : IPlatformHost
 
     // MARK: ffmpeg argument building
 
-    private enum Grab { DdaFull, DdaPlain, Gdi }
+    private enum Grab { DdaGpu, DdaFull, DdaPlain, Gdi }
 
     private static List<string> PreInput(EncoderKind k) =>
         k == EncoderKind.Qsv ? new() { "-init_hw_device", "qsv=hw", "-filter_hw_device", "hw" } : new();
@@ -157,14 +157,14 @@ public sealed class WindowsPlatform : IPlatformHost
     private static List<string> Codec(EncoderKind k, int fps, int bps)
     {
         string rate = bps.ToString(), buf = Math.Max(bps / 10, 100_000).ToString();
-        var common = new List<string> { "-b:v", rate, "-maxrate", rate, "-bufsize", buf, "-g", fps.ToString() };
+        var common = new List<string> { "-b:v", rate, "-maxrate", rate, "-bufsize", buf, "-g", Math.Max(fps / 2, 8).ToString() };
         List<string> specific = k switch
         {
             EncoderKind.Nvenc => new() { "-c:v", "hevc_nvenc", "-preset", "p1", "-tune", "ull", "-rc", "cbr", "-zerolatency", "1", "-bf", "0", "-forced-idr", "1" },
             EncoderKind.Amf => new() { "-c:v", "hevc_amf", "-usage", "ultralowlatency", "-quality", "speed", "-rc", "cbr" },
             EncoderKind.Qsv => new() { "-c:v", "hevc_qsv", "-preset", "veryfast", "-async_depth", "1", "-bf", "0" },
             _ => new() { "-c:v", "libx265", "-preset", "ultrafast", "-tune", "zerolatency",
-                         "-x265-params", $"keyint={fps}:min-keyint={fps}:bframes=0:rc-lookahead=0:scenecut=0:repeat-headers=1:log-level=error" }
+                         "-x265-params", $"keyint={Math.Max(fps / 2, 8)}:min-keyint={Math.Max(fps / 2, 8)}:bframes=0:rc-lookahead=0:scenecut=0:repeat-headers=1:log-level=error" }
         };
         specific.AddRange(common);
         return specific;
@@ -183,6 +183,14 @@ public sealed class WindowsPlatform : IPlatformHost
                                    "-video_size", $"{bounds.Width}x{bounds.Height}", "-i", "desktop",
                                    "-vf", PostFilter(k, w, h, scale) });
                 break;
+            case Grab.DdaGpu:
+            {
+                // Frames stay on the GPU all the way into the encoder: no 4K bitmap copies through system memory.
+                var dd = $"ddagrab=output_idx={output}:framerate={fps}:draw_mouse=1:output_fmt=bgra";
+                if (adapter > 0) dd += $":adapter_idx={adapter}";
+                a.AddRange(new[] { "-filter_complex", dd + "[v]", "-map", "[v]" });
+                break;
+            }
             default:
             {
                 var dd = $"ddagrab=output_idx={output}:framerate={fps}:draw_mouse=1";
@@ -228,7 +236,13 @@ public sealed class WindowsPlatform : IPlatformHost
         foreach (var k in kinds)
         {
             var kind = k;
-            foreach (var (grab, label) in new[] { (Grab.DdaFull, "Desktop Duplication"), (Grab.DdaPlain, "Desktop Duplication (basic)"), (Grab.Gdi, "GDI capture") })
+            var grabs = new List<(Grab, string)>();
+            if ((kind == EncoderKind.Nvenc || kind == EncoderKind.Amf) && !needScale && adapter == 0)
+                grabs.Add((Grab.DdaGpu, "Desktop Duplication (GPU)"));
+            grabs.Add((Grab.DdaFull, "Desktop Duplication"));
+            grabs.Add((Grab.DdaPlain, "Desktop Duplication (basic)"));
+            grabs.Add((Grab.Gdi, "GDI capture"));
+            foreach (var (grab, label) in grabs)
             {
                 var g = grab;
                 list.Add(new CaptureCandidate

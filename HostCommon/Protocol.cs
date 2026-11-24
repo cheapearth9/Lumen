@@ -113,10 +113,11 @@ public readonly record struct WelcomeInfo(ushort Width, ushort Height, byte Fps,
     }
 }
 
-public enum InputKind { MouseRel = 1, MouseAbs = 2, Button = 3, Scroll = 4, Key = 5, Touch = 6 }
+public enum InputKind { MouseRel = 1, MouseAbs = 2, Button = 3, Scroll = 4, Key = 5, Touch = 6, Gamepad = 7, GamepadPresence = 8 }
 
-public readonly record struct InputEvent(InputKind Kind, int A, int B, int C = 0, int D = 0)
+public readonly record struct InputEvent(InputKind Kind, int A, int B, int C = 0, int D = 0, int E = 0, int F = 0, int G = 0)
 {
+    public int Ry { get; init; }
     // Touch: A=id B=phase (0 down, 1 move, 2 up, 3 cancel) C=x D=y (0..65535) | MouseRel: A=dx B=dy | MouseAbs: A=x B=y (0..65535) | Button: A=index B=down | Scroll: A=dx B=dy | Key: A=mac code B=down
     public static bool TryDecode(ReadOnlySpan<byte> d, out InputEvent e)
     {
@@ -129,6 +130,11 @@ public readonly record struct InputEvent(InputKind Kind, int A, int B, int C = 0
             case 3 when d.Length >= 3: e = new(InputKind.Button, d[1], d[2]); return true;
             case 4 when d.Length >= 5: e = new(InputKind.Scroll, BinaryPrimitives.ReadInt16BigEndian(d[1..]), BinaryPrimitives.ReadInt16BigEndian(d[3..])); return true;
             case 5 when d.Length >= 4: e = new(InputKind.Key, BinaryPrimitives.ReadUInt16BigEndian(d[1..]), d[3]); return true;
+            // Gamepad: A=pad index, B=XInput button bits, C=left trigger, D=right trigger, E=LX F=LY G=RX (RY in the next field below)
+            case 7 when d.Length >= 14: e = new(InputKind.Gamepad, d[1], BinaryPrimitives.ReadUInt16BigEndian(d[2..]), d[4], d[5],
+                BinaryPrimitives.ReadInt16BigEndian(d[6..]), BinaryPrimitives.ReadInt16BigEndian(d[8..]), BinaryPrimitives.ReadInt16BigEndian(d[10..]))
+                { Ry = BinaryPrimitives.ReadInt16BigEndian(d[12..]) }; return true;
+            case 8 when d.Length >= 3: e = new(InputKind.GamepadPresence, d[1], d[2]); return true;
             case 6 when d.Length >= 7: e = new(InputKind.Touch, d[1], d[2], BinaryPrimitives.ReadUInt16BigEndian(d[3..]), BinaryPrimitives.ReadUInt16BigEndian(d[5..])); return true;
         }
         return false;

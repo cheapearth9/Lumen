@@ -23,6 +23,7 @@
     <!-- mDNS / Bonjour advertisement so the iOS app finds this PC automatically -->
     <PackageReference Include="Makaretu.Dns.Multicast" Version="0.27.0" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="Nefarius.ViGEm.Client" Version="1.21.256" />
   </ItemGroup>
 
 </Project>

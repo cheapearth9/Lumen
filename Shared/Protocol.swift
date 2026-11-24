@@ -254,11 +254,16 @@ enum InputEvent {
     case scroll(dx: Int16, dy: Int16)
     case key(UInt16, down: Bool)              // macOS virtual key code
     case touch(id: UInt8, phase: UInt8, x: UInt16, y: UInt16)   // phase 0 down, 1 move, 2 up, 3 cancel; x/y 0...65535
+    /// Xbox-style controller state. `buttons` uses the XInput bit layout (dpad 1/2/4/8 = up/down/left/right, start 0x10, back 0x20,
+    /// left/right stick click 0x40/0x80, LB/RB 0x100/0x200, guide 0x400, A/B/X/Y 0x1000/0x2000/0x4000/0x8000);
+    /// triggers 0...255; sticks -32768...32767 with up = positive Y (XInput convention).
+    case gamepad(index: UInt8, buttons: UInt16, lt: UInt8, rt: UInt8, lx: Int16, ly: Int16, rx: Int16, ry: Int16)
+    case gamepadPresence(index: UInt8, present: Bool)
 
     /// Events that must not be lost (sent twice, de-duplicated on the host).
     var isDiscrete: Bool {
         switch self {
-        case .button, .key: return true
+        case .button, .key, .gamepadPresence: return true
         case .touch(_, let phase, _, _): return phase >= 2
         default: return false
         }
@@ -273,6 +278,9 @@ enum InputEvent {
         case .scroll(let dx, let dy):   w.u8(4); w.i16(dx); w.i16(dy)
         case .key(let c, let down):     w.u8(5); w.u16(c); w.u8(down ? 1 : 0)
         case .touch(let id, let ph, let x, let y): w.u8(6); w.u8(id); w.u8(ph); w.u16(x); w.u16(y)
+        case .gamepad(let i, let b, let lt, let rt, let lx, let ly, let rx, let ry):
+            w.u8(7); w.u8(i); w.u16(b); w.u8(lt); w.u8(rt); w.i16(lx); w.i16(ly); w.i16(rx); w.i16(ry)
+        case .gamepadPresence(let i, let p): w.u8(8); w.u8(i); w.u8(p ? 1 : 0)
         }
         return w.data
     }
@@ -287,6 +295,9 @@ enum InputEvent {
         case 4: if let a = r.i16(), let b = r.i16() { return .scroll(dx: a, dy: b) }
         case 5: if let a = r.u16(), let b = r.u8() { return .key(a, down: b != 0) }
         case 6: if let i = r.u8(), let p = r.u8(), let x = r.u16(), let y = r.u16() { return .touch(id: i, phase: p, x: x, y: y) }
+        case 7: if let i = r.u8(), let b = r.u16(), let lt = r.u8(), let rt = r.u8(), let lx = r.i16(), let ly = r.i16(), let rx = r.i16(), let ry = r.i16() {
+            return .gamepad(index: i, buttons: b, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry) }
+        case 8: if let i = r.u8(), let p = r.u8() { return .gamepadPresence(index: i, present: p != 0) }
         default: break
         }
         return nil

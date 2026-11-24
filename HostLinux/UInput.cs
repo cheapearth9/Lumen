@@ -56,7 +56,7 @@ internal sealed class UInputInjector : IDisposable
     public string? Error { get; private set; }
     public bool TouchAvailable => _touch != null;
 
-    private static Device? Create(string name, ushort[] keys, ushort[] rels, (ushort code, int min, int max)[] abs, ushort[] props, out string? error)
+    private static Device? Create(string name, ushort[] keys, ushort[] rels, (ushort code, int min, int max)[] abs, ushort[] props, out string? error, ushort vendor = 0x4c4d, ushort product = 0x0001)
     {
         error = null;
         int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
@@ -79,7 +79,7 @@ internal sealed class UInputInjector : IDisposable
 
         var nameBytes = new byte[80];
         Encoding.ASCII.GetBytes(name).CopyTo(nameBytes, 0);
-        var s = new UinputSetup { id = new InputId { bustype = 0x06 /* BUS_VIRTUAL */, vendor = 0x4c4d, product = 0x0001, version = 1 }, name = nameBytes };
+        var s = new UinputSetup { id = new InputId { bustype = 0x06 /* BUS_VIRTUAL */, vendor = vendor, product = product, version = 1 }, name = nameBytes };
         if (IoctlSetup(fd, UI_DEV_SETUP, ref s) < 0 || IoctlNone(fd, UI_DEV_CREATE) < 0)
         {
             error = "uinput device setup failed (errno " + Marshal.GetLastWin32Error() + ")";
@@ -120,6 +120,8 @@ internal sealed class UInputInjector : IDisposable
                     if (e.B != 0) _mouse.Emit(EV_REL, REL_Y, e.B);
                     _mouse.Sync();
                     break;
+                case InputKind.Gamepad: Pad(e); break;
+                case InputKind.GamepadPresence: PadPresence(e.A, e.B != 0); break;
                 case InputKind.MouseAbs:
                     if (_abs == null) return;
                     _abs.Emit(EV_ABS, ABS_X, e.A);
@@ -142,6 +144,62 @@ internal sealed class UInputInjector : IDisposable
         }
     }
 
+    // MARK: Gamepads (virtual Xbox 360 controllers; SDL/Steam/Proton recognise the 045e:028e id)
+
+    private readonly Device?[] _pads = new Device?[4];
+    private readonly (int Buttons, int Lt, int Rt, int Lx, int Ly, int Rx, int Ry)[] _padState = new (int, int, int, int, int, int, int)[4];
+    private static readonly (int Bit, ushort Code)[] PadButtons =
+    {
+        (0x1000, 0x130), (0x2000, 0x131), (0x4000, 0x133), (0x8000, 0x134),   // A B X Y
+        (0x0100, 0x136), (0x0200, 0x137), (0x0020, 0x13a), (0x0010, 0x13b),   // LB RB back start
+        (0x0400, 0x13c), (0x0040, 0x13d), (0x0080, 0x13e)                     // guide, stick clicks
+    };
+
+    private void PadPresence(int index, bool present)
+    {
+        if (index < 0 || index > 3) return;
+        if (present && _pads[index] == null)
+        {
+            _pads[index] = Create($"Microsoft X-Box 360 pad {index}",
+                PadButtons.Select(b => b.Code).ToArray(), Array.Empty<ushort>(),
+                new (ushort, int, int)[] { (0, -32768, 32767), (1, -32768, 32767), (3, -32768, 32767), (4, -32768, 32767),
+                                           (2, 0, 255), (5, 0, 255), (0x10, -1, 1), (0x11, -1, 1) },
+                Array.Empty<ushort>(), out _, 0x045e, 0x028e);
+            _padState[index] = default;
+        }
+        else if (!present && _pads[index] is { } d)
+        {
+            IoctlNone(d.Fd, UI_DEV_DESTROY); close(d.Fd); d.Fd = -1;
+            _pads[index] = null;
+        }
+    }
+
+    private void Pad(InputEvent e)
+    {
+        int i = e.A;
+        if (i < 0 || i > 3) return;
+        if (_pads[i] == null) PadPresence(i, true);
+        var d = _pads[i];
+        if (d == null) return;
+        var old = _padState[i];
+        int b = e.B;
+        foreach (var (bit, code) in PadButtons)
+            if (((old.Buttons ^ b) & bit) != 0) d.Emit(EV_KEY, code, (b & bit) != 0 ? 1 : 0);
+        if (((old.Buttons ^ b) & 0x000F) != 0)
+        {
+            d.Emit(EV_ABS, 0x10, ((b & 8) != 0 ? 1 : 0) - ((b & 4) != 0 ? 1 : 0));
+            d.Emit(EV_ABS, 0x11, ((b & 2) != 0 ? 1 : 0) - ((b & 1) != 0 ? 1 : 0));
+        }
+        if (old.Lx != e.E) d.Emit(EV_ABS, 0, e.E);
+        if (old.Ly != e.F) d.Emit(EV_ABS, 1, -e.F - (e.F == -32768 ? 1 : 0));   // XInput up = +, evdev up = -
+        if (old.Rx != e.G) d.Emit(EV_ABS, 3, e.G);
+        if (old.Ry != e.Ry) d.Emit(EV_ABS, 4, -e.Ry - (e.Ry == -32768 ? 1 : 0));
+        if (old.Lt != e.C) d.Emit(EV_ABS, 2, e.C);
+        if (old.Rt != e.D) d.Emit(EV_ABS, 5, e.D);
+        d.Sync();
+        _padState[i] = (b, e.C, e.D, e.E, e.F, e.G, e.Ry);
+    }
+
     public void ReleaseAll()
     {
         lock (_lock)
@@ -149,6 +207,7 @@ internal sealed class UInputInjector : IDisposable
             foreach (var b in _heldButtons.ToArray()) Button(b, false);
             foreach (var k in _heldKeys.ToArray()) Key(k, false);
             foreach (var id in _slots.Keys.ToArray()) Touch(id, 3, 0, 0);
+            for (int i = 0; i < 4; i++) PadPresence(i, false);
         }
     }
 
@@ -222,7 +281,7 @@ internal sealed class UInputInjector : IDisposable
 
     public void Dispose()
     {
-        foreach (var d in new[] { _keyboard, _mouse, _abs, _touch })
+        foreach (var d in new[] { _keyboard, _mouse, _abs, _touch }.Concat(_pads))
         {
             if (d == null || d.Fd < 0) continue;
             IoctlNone(d.Fd, UI_DEV_DESTROY);
