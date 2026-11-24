@@ -73,7 +73,7 @@ public sealed class InputInjector
                     Key((ushort)e.A, e.B != 0);
                     break;
                 case InputKind.Touch:
-                    Touch(e.A, e.B, e.C, e.D);
+                    EnqueueTouch(e.A, e.B, e.C, e.D);
                     break;
                 case InputKind.Gamepad: _pads.Update(e); break;
                 case InputKind.GamepadPresence: _pads.Presence(e.A, e.B != 0); break;
@@ -88,7 +88,7 @@ public sealed class InputInjector
         {
             foreach (var b in _heldButtons.ToArray()) Button(b, false);
             foreach (var k in _heldKeys.ToArray()) Key(k, false);
-            foreach (var id in _contacts.Keys.ToArray()) Touch(id, 3, 0, 0);
+            foreach (var id in _contactIds()) EnqueueTouch(id, 3, 0, 0);
             for (int i = 0; i < 4; i++) _pads.Presence(i, false);
         }
     }
@@ -123,6 +123,29 @@ public sealed class InputInjector
 
     [DllImport("user32.dll", SetLastError = true)] private static extern bool InitializeTouchInjection(uint maxCount, uint dwMode);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool InjectTouchInput(uint count, POINTER_TOUCH_INFO[] contacts);
+
+    private int[] _contactIds() { lock (_touchLock) return _contacts.Keys.ToArray(); }
+
+    // Touch injection is tied to the thread that initialised it, and input packets arrive on several threads,
+    // so every touch goes through one dedicated worker that initialises and injects.
+    private readonly object _touchLock = new();
+    private System.Collections.Concurrent.BlockingCollection<(int Id, int Phase, int X, int Y)>? _touchQ;
+
+    private void EnqueueTouch(int id, int phase, int x, int y)
+    {
+        if (_touchQ == null)
+        {
+            _touchQ = new();
+            var q = _touchQ;
+            new Thread(() =>
+            {
+                try { InitializeTouchInjection(10, 1); } catch { }
+                foreach (var t in q.GetConsumingEnumerable())
+                    lock (_touchLock) Touch(t.Id, t.Phase, t.X, t.Y);
+            }) { IsBackground = true, Name = "lumen-touch" }.Start();
+        }
+        _touchQ.Add((id, phase, x, y));
+    }
 
     private static bool _touchInit, _touchOk;
     private readonly Dictionary<int, POINTER_TOUCH_INFO> _contacts = new();

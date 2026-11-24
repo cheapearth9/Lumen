@@ -97,15 +97,57 @@ struct RootView: View {
         }
     }
 
-    /// Ask the Mac for the native resolution of whichever screen will show the video.
+    /// The size to ask the computer for: the device's own resolution, 1080p, or a custom size.
     private func makeHello() -> HelloInfo {
-        let screens = UIScreen.screens
-        let target = screens.count > 1 ? screens[screens.count - 1] : UIScreen.main
-        let b = target.nativeBounds
-        let w = min(3840, max(b.width, b.height))
-        let h = min(2160, min(b.width, b.height))
+        let (w, h) = ResolutionSetting.requested()
         return HelloInfo(width: UInt16(w), height: UInt16(h), fps: UInt8(fps), bitrateMbps: 40,
                          flags: LumenSettings.helloFlags())
+    }
+}
+
+/// Resolution choices: full screen (device original), 16:9 (1080p) or custom.
+enum ResolutionSetting {
+    static let modeKey = "resMode", widthKey = "resW", heightKey = "resH"
+
+    static func requested() -> (Int, Int) {
+        let d = UserDefaults.standard
+        switch d.integer(forKey: modeKey) {
+        case 1: return (1920, 1080)
+        case 2:
+            let w = d.object(forKey: widthKey) as? Int ?? 1920, h = d.object(forKey: heightKey) as? Int ?? 1080
+            return (min(3840, max(640, w)) & ~1, min(2160, max(360, h)) & ~1)
+        default:
+            let screens = UIScreen.screens
+            let target = screens.count > 1 ? screens[screens.count - 1] : UIScreen.main
+            let b = target.nativeBounds
+            return (Int(min(3840, max(b.width, b.height))), Int(min(2160, min(b.width, b.height))))
+        }
+    }
+}
+
+struct ResolutionPicker: View {
+    @AppStorage(ResolutionSetting.modeKey) private var mode = 0
+    @AppStorage(ResolutionSetting.widthKey) private var w = 1920
+    @AppStorage(ResolutionSetting.heightKey) private var h = 1080
+
+    var body: some View {
+        Picker("Resolution", selection: $mode) {
+            Text("Full screen").tag(0)
+            Text("16:9 (1080p)").tag(1)
+            Text("Custom").tag(2)
+        }
+        .pickerStyle(.segmented)
+        if mode == 2 {
+            HStack {
+                TextField("Width", value: $w, format: .number.grouping(.never)).keyboardType(.numberPad).multilineTextAlignment(.trailing)
+                Text("×")
+                TextField("Height", value: $h, format: .number.grouping(.never)).keyboardType(.numberPad)
+            }
+        }
+        Text(mode == 0 ? "The device's own resolution (an attached monitor's resolution when one is plugged in)."
+             : mode == 1 ? "1920×1080: lighter on the computer and the network."
+             : "Between 640×360 and 3840×2160. The picture keeps the computer screen's shape inside this size.")
+            .font(.footnote).foregroundStyle(.secondary)
     }
 }
 
@@ -205,6 +247,8 @@ struct ConnectView: View {
                     .pickerStyle(.segmented)
                 }
 
+                Section("Resolution") { ResolutionPicker() }
+
                 Section("Quality") {
                     Picker("Frame rate", selection: $fps) {
                         Text("30").tag(30); Text("60").tag(60); Text("120").tag(120)
@@ -273,6 +317,7 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     Toggle("Sound", isOn: $audioOn)
                 }
+                Section("Resolution") { ResolutionPicker() }
                 Section {
                     Toggle("Send controllers to the computer", isOn: $controllersOn)
                 } header: { Text("Controllers") } footer: {
