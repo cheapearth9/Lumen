@@ -127,7 +127,13 @@ public static class FfmpegUtil
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
             try { await p.WaitForExitAsync(cts.Token); }
             catch (OperationCanceledException) { try { p.Kill(true); } catch { } return false; }
-            if (p.ExitCode != 0) HostLog.Write("encoder test failed: " + string.Join(' ', args.Take(12)) + " -> " + Trim(await err));
+            if (p.ExitCode != 0)
+            {
+                var text = Trim(await err);
+                HostLog.Write("encoder test failed: " + string.Join(' ', args.Take(12)) + " -> " + text);
+                if (text.Contains("nvenc API version", StringComparison.OrdinalIgnoreCase))
+                    HostLog.Write("HINT: your NVIDIA driver is older than this ffmpeg's NVENC needs. Update the NVIDIA driver to use the GPU encoder.");
+            }
             return p.ExitCode == 0;
         }
         catch { return false; }

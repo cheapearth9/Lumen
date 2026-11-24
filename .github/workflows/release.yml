@@ -177,8 +177,21 @@ jobs:
 
       - name: Bundle ffmpeg (LGPL build with NVENC / AMF / Quick Sync)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          # The master build needs the very newest NVIDIA driver (NVENC API 13.1) and silently falls back to the CPU on
+          # older drivers. Prefer a release-branch build, which targets an older NVENC API that more drivers support.
+          $h = @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "lumen-ci" }
+          $rel = Invoke-RestMethod "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest" -Headers $h
+          $names = $rel.assets | ForEach-Object { $_.name } | Where-Object { $_ -match '^ffmpeg-n[0-9.]+-latest-win64-gpl-[0-9.]+\.zip$' }
+          Write-Host "release-branch builds: $($names -join ', ')"
+          $pick = $null
+          foreach ($pref in @('n7.1', 'n7.0', 'n8.0', 'n6.1')) { $pick = $names | Where-Object { $_ -like "ffmpeg-$pref-*" } | Select-Object -First 1; if ($pick) { break } }
+          if (-not $pick) { $pick = $names | Select-Object -First 1 }
+          if (-not $pick) { $pick = "ffmpeg-master-latest-win64-gpl.zip" }
+          Write-Host "bundling $pick"
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$pick" -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg
           $root = (Get-ChildItem ffmpeg -Directory | Select-Object -First 1).FullName
           Copy-Item "$root/bin/ffmpeg.exe" dist/win/ffmpeg.exe
