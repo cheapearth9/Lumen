@@ -8,6 +8,7 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
     private let client: StreamClient
     private let input: InputCapture
     private lazy var gamepads = GamepadCapture(client: client)
+    private let softKeyboard = SoftKeyboardView()
     private let engine = TouchEngine()
     private let touchView = TouchSurfaceView()
     private let videoView = VideoView()
@@ -123,6 +124,10 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
         input.onToggleLock = { [weak self] in self?.locked.toggle() }
         input.start()
         gamepads.start()
+        softKeyboard.send = { [weak self] e in self?.client.sendInput(e) }
+        softKeyboard.onHidden = { [weak self] in self?.rebuildMenu() }
+        view.addSubview(softKeyboard)
+        if UserDefaults.standard.bool(forKey: "keyboardAuto") { DispatchQueue.main.async { self.softKeyboard.becomeFirstResponder() } }
         // With a monitor attached the stream plays there fullscreen and this screen is the touch surface.
         NotificationCenter.default.addObserver(self, selector: #selector(externalChanged), name: ExternalDisplay.changed, object: nil)
         externalChanged()
@@ -198,7 +203,15 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
                             state: locked ? .on : .off) { [weak self] _ in self?.locked.toggle() }
         let disc = UIAction(title: "Disconnect", image: UIImage(systemName: "xmark.circle"),
                             attributes: .destructive) { [weak self] _ in self?.client.disconnect() }
-        menuButton.menu = UIMenu(children: [displayMenu, sound, touchMenu, lock, disc])
+        let kbShown = softKeyboard.isFirstResponder
+        let keyboard = UIAction(title: kbShown ? "Hide keyboard" : "Show keyboard", image: UIImage(systemName: "keyboard"),
+                                state: kbShown ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            if self.softKeyboard.isFirstResponder { _ = self.softKeyboard.resignFirstResponder() }
+            else { _ = self.softKeyboard.becomeFirstResponder() }
+            self.rebuildMenu()
+        }
+        menuButton.menu = UIMenu(children: [displayMenu, sound, touchMenu, keyboard, lock, disc])
     }
 
     // MARK: Geometry

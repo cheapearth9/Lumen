@@ -296,6 +296,7 @@ struct SettingsView: View {
     @AppStorage(LumenSettings.audioKey) private var audioOn = true
     @AppStorage(LumenSettings.extendKey) private var extendMode = false
     @AppStorage("controllersOn") private var controllersOn = true
+    @AppStorage("keyboardAuto") private var keyboardAuto = false
 
     var body: some View {
         NavigationStack {
@@ -318,6 +319,11 @@ struct SettingsView: View {
                     Toggle("Sound", isOn: $audioOn)
                 }
                 Section("Resolution") { ResolutionPicker() }
+                Section {
+                    Toggle("Show the on-screen keyboard when streaming starts", isOn: $keyboardAuto)
+                } header: { Text("Keyboard") } footer: {
+                    Text("You can also open or close it any time from the ⋯ menu while streaming (Show keyboard). It types into the computer.")
+                }
                 Section {
                     Toggle("Send controllers to the computer", isOn: $controllersOn)
                 } header: { Text("Controllers") } footer: {
