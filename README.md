@@ -36,8 +36,8 @@ Input (mouse, keyboard, touch) and audio ◄────────────
    - **Linux (X11):** install the package, then run `lumenhost` in a terminal (or start *Lumen Host* from the app menu).
      It prints your IP addresses and the pairing code. Run `lumenhost --check` if something does not work.
 2. **iPhone/iPad:** open Lumen. The computer appears under *Computers on your network* (Mac, Windows or Linux), or plug in the cable.
-3. The first time you connect to a computer the app asks for its **pairing code** (shown in the host window or terminal). It is
-   remembered in the iOS keychain.
+3. The first time you connect to a computer the iPad shows a **5-digit code**. Type it into the prompt on the computer (host window or
+   terminal). After that the pair is remembered and connecting needs no code.
 
 ### Finding the computer
 The host window shows **Your IP address**. If the computer is not listed, type that address into *Connect by IP address*.
@@ -55,7 +55,7 @@ It connects automatically within a couple of seconds. Cable mode has no packet l
   pauses until you tap *Resume cable auto-connect*.
 
 ## Touch: touchpad and touchscreen mode
-Pick the mode on the connect screen or in the stream menu.
+Pick the mode on the connect screen, in Settings (gear icon) or in the stream menu.
 
 | | Touchpad | Touchscreen |
 |---|---|---|
@@ -69,28 +69,32 @@ On **Windows and Linux hosts** touchscreen mode is *native*: the computer receiv
 feedback, apps get touch input, pinch-zoom works) instead of a mouse pretending to be a finger. macOS has no public API for
 synthetic touch, so on a Mac host touchscreen mode is emulated with mouse input and the same gestures.
 
-## Encryption
-All video, audio, input and control traffic is encrypted end to end (AES-256-GCM, keys from an ECDH P-256 exchange mixed with
-the pairing code). Someone on your network without the code can neither watch nor control your computer. Use **New code**
-in the host window (or `lumenhost --new-code`) to change the code. The pairing code is a 5-digit PIN, so it is stretched with PBKDF2, but it is a convenience level of protection: someone who records your traffic could still guess it offline, so use *New code* if you suspect that. Only discovery packets (name and platform of the computer) are unencrypted.
-Details: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+## Encryption and pairing
+All video, audio, input and control traffic is encrypted end to end (AES-256-GCM). Pairing works like Sunshine/Apollo: the iPad shows a
+5-digit code, you type it on the computer, and both sides derive a long-term secret (ECDH plus a code-confirmation step that blocks
+man-in-the-middle attacks; 3 wrong codes lock pairing for a minute). Use *Forget paired devices* in the host window (or `lumenhost --unpair-all`)
+to revoke everything. Only discovery packets (name and platform of the computer) are unencrypted. Details: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 ## Audio
 System audio is streamed to the iPad (mute from the stream menu). Mac: ScreenCaptureKit, Windows: WASAPI loopback, Linux:
 PulseAudio/PipeWire default output monitor.
 
 ## Mirror or Extend
-Two buttons, in the iPad app (connect screen and stream menu) and in the host window:
+Two buttons, in the iPad app (connect screen, Settings and stream menu). The computer's window no longer has them:
 - **Mirror** shows the display chosen on the host.
 - **Extend** makes the iPad an additional screen. **Mac:** a virtual display is created automatically (uses a private macOS API;
   if macOS refuses, the app tells you and mirrors instead). **Windows:** uses the [SudoVDA](https://github.com/SudoMaker/SudoVDA) virtual display driver (the one Apollo uses): tick *Install the SudoVDA virtual display driver* in the installer
   (or press *Install virtual display* in the host window; it adds the driver's certificate to Windows' trusted store, like Apollo does). Lumen then creates a monitor at exactly the iPad's resolution when you press Extend
   and removes it afterwards. Without the driver, Extend uses any extra display that already exists. **Linux:** streams a second monitor (or a dummy/virtual xrandr output) if one exists.
-The most recent choice, from the iPad or from the host, wins.
+
+## Controllers
+Connect an Xbox, PlayStation, Switch Pro or MFi controller to the iPhone/iPad over Bluetooth; it is forwarded to the computer as a virtual
+**Xbox 360 controller** (up to 4, rumble not supported yet). **Windows** needs the ViGEmBus driver (tick it in the installer, same driver Sunshine uses).
+**Linux** uses `/dev/uinput` (same group setup as the keyboard). **macOS** hosts cannot create virtual controllers. Toggle in Settings (gear icon).
 
 ## External monitor
-Plug a monitor into the iPhone/iPad (USB-C to HDMI/DisplayPort). Lumen takes over the monitor as an extended display and
-renders the stream there at the monitor's native resolution (up to 4K). Connect *after* plugging the monitor in so the
+Plug a monitor into the iPhone/iPad (USB-C to HDMI/DisplayPort). Lumen takes over the monitor and shows the stream there fullscreen at the
+monitor's native resolution (up to 4K); the iPad screen then works as the touchpad/touchscreen. Connect *after* plugging the monitor in so the
 resolution is negotiated for it.
 
 ## Pointer lock for games
@@ -112,7 +116,8 @@ On Windows and Linux, keys are injected as hardware scancodes / evdev keys so ga
 - Options: `lumenhost --help`.
 
 ## Tuning
-- Frame rate and bitrate are on the connect screen. 40 Mbps at 60 fps suits 1080p/1440p on good Wi-Fi; use more over cable.
+- Frame rate and bitrate are on the connect screen. 40 Mbps at 60 fps suits 1080p/1440p on good Wi-Fi; use more over cable (the host caps at 80 Mbps on Wi-Fi, 150 on cable).
+- The host log prints `stats: fps, Mbps, dropped frames` every 5 s; send it when reporting lag.
 - Mac host: lost packets trigger an immediate keyframe request. Windows/Linux hosts: ffmpeg cannot emit a keyframe on demand, so it
   sends one every second and recovery after a loss takes up to 1 s (not an issue over cable).
 - Windows picks the best encoder automatically (NVIDIA NVENC, AMD AMF, Intel Quick Sync, then CPU) and falls back through

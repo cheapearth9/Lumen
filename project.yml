@@ -41,7 +41,13 @@ targets:
           - _lumen._udp
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
-          UISceneConfigurations: {}
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleExternalDisplayNonInteractive:
+              - UISceneConfigurationName: External Display
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).ExternalSceneDelegate
+            UIWindowSceneSessionRoleExternalDisplay:
+              - UISceneConfigurationName: External Display
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).ExternalSceneDelegate
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.lumen.client

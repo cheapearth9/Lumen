@@ -7,6 +7,7 @@ import Combine
 final class StreamViewController: UIViewController, TouchEngineDelegate {
     private let client: StreamClient
     private let input: InputCapture
+    private lazy var gamepads = GamepadCapture(client: client)
     private let engine = TouchEngine()
     private let touchView = TouchSurfaceView()
     private let videoView = VideoView()
@@ -121,6 +122,10 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
 
         input.onToggleLock = { [weak self] in self?.locked.toggle() }
         input.start()
+        gamepads.start()
+        // With a monitor attached the stream plays there fullscreen and this screen is the touch surface.
+        NotificationCenter.default.addObserver(self, selector: #selector(externalChanged), name: ExternalDisplay.changed, object: nil)
+        externalChanged()
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
@@ -129,7 +134,13 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
         becomeFirstResponder()
     }
 
+    @objc private func externalChanged() {
+        videoView.isHidden = ExternalDisplay.isConnected
+    }
+
     deinit {
+        NotificationCenter.default.removeObserver(self)
+        gamepads.stop()
         engine.cancelAll()
         input.stop()
         UIApplication.shared.isIdleTimerDisabled = false

@@ -32,20 +32,24 @@ for other frames just the AVCC access unit. Max payload per datagram is 1150 byt
 ## Input events (payload of type 4)
 `kind u8` then: 1 mouseRel `dx i16, dy i16` | 2 mouseAbs `x u16, y u16` (0..65535 over the video) | 3 button `index u8 (0 left,1 right,2 middle), down u8` |
 4 scroll `dx i16, dy i16` (positive dy = content moves down, i.e. natural scrolling) | 5 key `macVirtualKeyCode u16, down u8` |
-6 touch `id u8, phase u8 (0 down,1 move,2 up,3 cancel), x u16, y u16` (0..65535 over the video).
+6 touch `id u8, phase u8 (0 down,1 move,2 up,3 cancel), x u16, y u16` (0..65535 over the video) |
+7 gamepad `index u8 (0..3), buttons u16 (XInput bits: dpad 1/2/4/8, start 0x10, back 0x20, LS 0x40, RS 0x80, LB 0x100, RB 0x200, guide 0x400, A 0x1000, B 0x2000, X 0x4000, Y 0x8000), lt u8, rt u8, lx i16, ly i16, rx i16, ry i16` (stick up = positive) | 8 gamepad presence `index u8, present u8`.
+The client resends the full gamepad state ~4x/s so a lost datagram heals. Hosts: Windows = ViGEmBus virtual Xbox 360, Linux = uinput (045e:028e), macOS ignores them.
 Touch events are only sent when the host reported caps bit0 (native touch).
 
-## Encryption
-Everything except discover / announce / handshake is encrypted. Unknown or unauthenticated packets are dropped silently.
-* **Pairing code**: a random 5-digit PIN shown on the host; both sides stretch it with PBKDF2-HMAC-SHA256 (salt `lumen-pin-v1`, 200000 iterations, 32 bytes) because 5 digits is little entropy. Typed once on the iOS app,
-  stored in the iOS Keychain per host. The host can regenerate it.
-* **Handshake** packets (type 11, `id` 0), payload `role u8 (0 client / 1 host), version u8 (=1), P-256 public key (65 bytes x9.63 uncompressed), nonce 16 bytes`.
-* **Keys**: `ikm = ECDH raw shared secret (32 bytes) || stretched pairing key (32 bytes)`, `salt = clientNonce || hostNonce`,
-  `c2s = HKDF-SHA256(ikm, salt, "lumen-v1 c2s", 32)`, `s2c = ... "lumen-v1 s2c"`. A peer without the pairing code derives different keys, so nothing it sends authenticates.
-* **Sealed packet**: `0x4C 0x45 | seq u64 BE | ciphertext | tag(16)`. AES-256-GCM, nonce = 4 zero bytes || seq, AAD = first 10 bytes. Plaintext = a normal Lumen packet (header included).
+## Pairing and encryption
+Everything except discover / announce / handshake / pair is encrypted. Unknown or unauthenticated packets are dropped silently.
+* **Pairing** (type 13, once per computer, Sunshine style). The iPad shows a 5-digit code, the user types it on the computer. Steps:
+  1 client->host `[1][commit = SHA256(pkC||nonceC) (32)][device name]`; 2 host->client `[2][pkH (65)][nonceH (16)]`; 3 client->host `[3][pkC][nonceC]`
+  (host checks the commitment); 4 host->client `[4][result: 0 paired, 1 wrong code, 2 busy/locked, 3 error]`.
+  Code = `u32BE(SHA256("lumen-sas-v1"||pkC||pkH||nonceC||nonceH)[0..4]) % 100000`. Both sides compute it, so a man in the middle sees different codes;
+  the commitment stops the client side from grinding keys. The host locks pairing for 60 s after 3 wrong codes.
+  Long-term secret = `HKDF-SHA256(ECDH secret, salt nonceC||nonceH, "lumen-pair-v1", 32)`, id = `SHA256("lumen-keyid"||secret)[0..8]`. Stored in the host's `paired.json` and the iOS Keychain.
+* **Handshake** (type 11): client `[0][version 2][pk (65)][nonce (16)][keyId (8)]`; host `[1][2][pk][nonce]`, or `[2][2]` = pairing required (unknown keyId).
+* **Keys**: `ikm = ECDH secret || long-term secret`, `salt = clientNonce || hostNonce`, `c2s = HKDF-SHA256(ikm, salt, "lumen-v1 c2s", 32)`, `s2c` likewise with "lumen-v1 s2c".
+* **Sealed packet**: `0x4C 0x45 | seq u64 BE | ciphertext | tag(16)`. AES-256-GCM, nonce = 4 zero bytes || seq, AAD = first 10 bytes. Plaintext = a normal Lumen packet.
   Receivers drop replays (`ReplayWindow`). Over TCP the sealed packet is what gets length-prefixed.
-* **Flow**: client sends handshake(0) -> host replies handshake(1) -> client sends sealed hello -> host sends sealed welcome (if the client cannot open it, the pairing code is wrong).
-  The handshake reply proves the host is alive; failing to open the welcome means "wrong pairing code".
+* **Flow**: handshake -> (pairing if required) -> sealed hello -> sealed welcome.
 
 ## Mirror / Extend
 `hello.flags & 2` asks for **extend**: the host creates a virtual display with the client's resolution and streams that, instead of mirroring the existing display.

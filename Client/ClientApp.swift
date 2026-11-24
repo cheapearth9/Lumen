@@ -20,29 +20,51 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      configurationForConnecting connectingSceneSession: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
-        let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
-        if connectingSceneSession.role == .windowExternalDisplayNonInteractive {
+        if connectingSceneSession.role == .windowExternalDisplayNonInteractive
+            || connectingSceneSession.role.rawValue == "UIWindowSceneSessionRoleExternalDisplay" {
+            let config = UISceneConfiguration(name: "External Display", sessionRole: connectingSceneSession.role)
             config.delegateClass = ExternalSceneDelegate.self
+            return config
         }
-        return config
+        return UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+    }
+}
+
+/// Tracks whether a monitor is attached. While one is, the stream is shown there fullscreen and the
+/// device's own screen becomes the touchpad / touchscreen surface.
+enum ExternalDisplay {
+    static let changed = Notification.Name("LumenExternalDisplayChanged")
+    private(set) static var count = 0
+    static var isConnected: Bool { count > 0 }
+    static func update(_ delta: Int) {
+        count = max(0, count + delta)
+        NotificationCenter.default.post(name: changed, object: nil)
     }
 }
 
 final class ExternalSceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
 
+    func sceneDidDisconnect(_ scene: UIScene) { window = nil; ExternalDisplay.update(-1) }
+
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
         let vc = ExternalVideoController()
         let w = UIWindow(windowScene: windowScene)
         w.rootViewController = vc
+        w.frame = windowScene.screen.bounds
         w.isHidden = false
         window = w
+        ExternalDisplay.update(1)
     }
 }
 
 final class ExternalVideoController: UIViewController {
-    override func loadView() { view = VideoView() }
+    override func loadView() {
+        let v = VideoView()
+        v.displayLayer.videoGravity = .resizeAspect
+        view = v
+    }
     override var prefersStatusBarHidden: Bool { true }
 }
 
@@ -99,6 +121,7 @@ struct ConnectView: View {
     @AppStorage(LumenSettings.audioKey) private var audioOn = true
     @AppStorage(LumenSettings.touchModeKey) private var touchMode = TouchEngine.Mode.touchscreen.rawValue
     @State private var recents: [RecentHost] = []
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack {
@@ -200,12 +223,60 @@ struct ConnectView: View {
                 }
             }
             .navigationTitle("Lumen")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Settings")
+                }
+            }
+            .sheet(isPresented: $showSettings) { SettingsView() }
             .refreshable { await client.rescanAndWait() }
             .onAppear {
                 recents = RecentHosts.load()
                 client.setDiscoveryActive(true)
             }
             .onDisappear { client.setDiscoveryActive(false) }
+        }
+    }
+}
+
+// MARK: - Settings
+
+struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(LumenSettings.touchModeKey) private var touchMode = TouchEngine.Mode.touchscreen.rawValue
+    @AppStorage(LumenSettings.audioKey) private var audioOn = true
+    @AppStorage(LumenSettings.extendKey) private var extendMode = false
+    @AppStorage("controllersOn") private var controllersOn = true
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Touch mode", selection: $touchMode) {
+                        Text("Touchpad").tag(TouchEngine.Mode.touchpad.rawValue)
+                        Text("Touchscreen").tag(TouchEngine.Mode.touchscreen.rawValue)
+                    }
+                    .pickerStyle(.segmented)
+                } header: { Text("Touch") } footer: {
+                    Text("Touchpad moves the cursor like a laptop trackpad. Touchscreen sends your touches to the computer where you tap (native multi-touch on Windows and Linux).")
+                }
+                Section("Display") {
+                    Picker("Display mode", selection: $extendMode) {
+                        Text("Mirror").tag(false)
+                        Text("Extend").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    Toggle("Sound", isOn: $audioOn)
+                }
+                Section {
+                    Toggle("Send controllers to the computer", isOn: $controllersOn)
+                } header: { Text("Controllers") } footer: {
+                    Text("Connect an Xbox, PlayStation or MFi controller to this device over Bluetooth. It shows up as an Xbox 360 controller on the computer (Windows needs the ViGEmBus driver).")
+                }
+            }
+            .navigationTitle("Settings")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
     }
 }
