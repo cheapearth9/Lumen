@@ -21,7 +21,7 @@ Input (mouse, keyboard, touch) and audio ◄────────────
 | `Lumen-Host-macOS.dmg` | Mac host: open it and drag **Lumen Host** onto **Applications** |
 | `Lumen-Host-Setup.exe` | Windows host installer (includes ffmpeg, optional desktop shortcut, firewall rules) |
 | `Lumen-Host-Windows.zip` | Windows host, portable |
-| `lumenhost_*_amd64.deb` / `_arm64.deb` | Debian, Ubuntu, Mint, Pop!_OS … |
+| `lumenhost_*_amd64.deb` | Debian, Ubuntu, Mint, Pop!_OS … |
 | `lumenhost-*.pkg.tar.zst` | Arch Linux / Manjaro (`sudo pacman -U file`) |
 | `Lumen-Host-*.AppImage` | Any Linux distro, ffmpeg included |
 | `Lumen-Host.flatpak` | Flatpak (best effort, see below) |

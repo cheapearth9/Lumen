@@ -295,9 +295,6 @@ jobs:
           - arch: x64
             rid: linux-x64
             deb: amd64
-          - arch: arm64
-            rid: linux-arm64
-            deb: arm64
     steps:
       - uses: actions/checkout@v4
 
