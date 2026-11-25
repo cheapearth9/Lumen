@@ -107,7 +107,9 @@ internal sealed class SudoVda : IDisposable
             var ver = v.Query<VersionOut>(IoctlVersion);
             if (ver is not { } vv || vv.Major != 0 || vv.Minor < 2) { HostLog.Write("SudoVDA protocol not compatible"); v.Dispose(); return null; }
 
-            v._monitor = Guid.NewGuid();
+            // Same identity every time (per computer), so Windows remembers this monitor's position, scale and resolution
+            // between sessions instead of treating it as a brand-new display on every connect.
+            v._monitor = new Guid(System.Security.Cryptography.MD5.HashData(Encoding.UTF8.GetBytes("lumen-vda-" + Environment.MachineName)));
             byte[] Pad(string s) { var b = new byte[14]; Encoding.ASCII.GetBytes(s.Length > 13 ? s[..13] : s).CopyTo(b, 0); return b; }
             var p = new AddParams
             {

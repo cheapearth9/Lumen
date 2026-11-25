@@ -242,9 +242,6 @@ public sealed class WindowsPlatform : IPlatformHost
             grabs.Add((Grab.DdaFull, "Desktop Duplication"));
             grabs.Add((Grab.DdaPlain, "Desktop Duplication (basic)"));
             grabs.Add((Grab.Gdi, "GDI capture"));
-            // A virtual display (Extend) can leave Desktop Duplication repeating its first frame while windows move on it,
-            // which no watchdog can notice because the frames keep coming. GDI capture reads the real desktop every frame.
-            if (_vda != null) grabs = grabs.OrderBy(x => x.Item1 == Grab.Gdi ? 0 : 1).ToList();
             foreach (var (grab, label) in grabs)
             {
                 var g = grab;
