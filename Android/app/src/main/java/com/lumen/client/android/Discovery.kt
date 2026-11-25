@@ -58,7 +58,9 @@ class SubnetScanner(private val ctx: Context) {
 
     private fun localInterfaces(): List<Iface> {
         val out = ArrayList<Iface>()
-        val en = try { NetworkInterface.getNetworkInterfaces() } catch (e: Exception) { null } ?: return out
+        var en: java.util.Enumeration<NetworkInterface>? = null
+        try { en = NetworkInterface.getNetworkInterfaces() } catch (e: Exception) { en = null }
+        if (en == null) return out
         for (ni in Collections.list(en)) {
             try {
                 if (!ni.isUp || ni.isLoopback || skipName(ni.name)) continue

@@ -98,7 +98,7 @@ class AudioPlayer {
     @Synchronized
     fun start() {
         if (running) return
-        val t: AudioTrack
+        var made: AudioTrack? = null
         try {
             val minBuf = AudioTrack.getMinBufferSize(48000, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
             val bytes = maxOf(minBuf, 960 * 4)
@@ -119,11 +119,13 @@ class AudioPlayer {
                 .setBufferSizeInBytes(bytes)
                 .setTransferMode(AudioTrack.MODE_STREAM)
             if (Build.VERSION.SDK_INT >= 26) b.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-            t = b.build()
-            t.play()
+            val built: AudioTrack = b.build()
+            built.play()
+            made = built
         } catch (e: Exception) {
             return
         }
+        val t: AudioTrack = made ?: return
         ring.reset()
         track = t
         running = true

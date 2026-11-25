@@ -162,6 +162,7 @@ jobs:
           name: apple
           path: |
             dist/Lumen-iOS.ipa
+            dist/Lumen-Android.apk
             dist/Lumen-Host-macOS.dmg
           if-no-files-found: error
 
@@ -376,9 +377,67 @@ jobs:
           path: dist/out/*
           if-no-files-found: warn
 
+  android:
+    name: Android client
+    needs: version
+    # Never blocks the release: the iOS / host builds publish even if this job fails.
+    continue-on-error: true
+    env:
+      LUMEN_VERSION: ${{ needs.version.outputs.v }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.7"
+
+      - name: Accept SDK licenses and make sure platform 34 is installed
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          SDKM="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ -x "$SDKM" ]; then
+            yes | "$SDKM" --licenses > /dev/null || true
+            "$SDKM" "platforms;android-34" "build-tools;34.0.0" > /dev/null || true
+          fi
+
+      - name: Create signing keystore (debug-style, generated for this build)
+        run: |
+          keytool -genkeypair -keystore "$RUNNER_TEMP/lumen.keystore" -storepass android -keypass android \
+            -alias lumen -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Lumen, O=Lumen, C=US"
+
+      - name: Build APK
+        working-directory: Android
+        run: >
+          gradle --no-daemon assembleRelease
+          -PlumenVersionName=${{ env.LUMEN_VERSION }}
+          -PlumenVersionCode=${{ github.run_number }}
+          -PlumenKeystore=$RUNNER_TEMP/lumen.keystore
+          -PlumenKeystorePass=android
+          -PlumenKeyAlias=lumen
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          APK=$(find Android/app/build/outputs/apk/release -name '*.apk' | head -n 1)
+          echo "APK: $APK"
+          cp "$APK" dist/Lumen-Android.apk
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/Lumen-Android.apk
+          if-no-files-found: error
+
   release:
     name: Publish release
-    needs: [version, apple, windows, linux]
+    needs: [version, apple, windows, linux, android]
     if: always() && needs.apple.result == 'success' && needs.windows.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -402,6 +461,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/Lumen-iOS.ipa
+            dist/Lumen-Android.apk
             dist/Lumen-Host-macOS.dmg
             dist/Lumen-Host-Setup.exe
             dist/Lumen-Host-Windows.zip

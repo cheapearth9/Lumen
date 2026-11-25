@@ -129,13 +129,14 @@ class VideoDecoder {
         for (full in booleanArrayOf(true, false)) {
             var c: MediaCodec? = null
             try {
-                c = MediaCodec.createDecoderByType(MIME)
-                c.configure(format(full), s, null, 0)
-                c.start()
-                codec = c
+                val created: MediaCodec = MediaCodec.createDecoderByType(MIME)
+                c = created
+                created.configure(format(full), s, null, 0)
+                created.start()
+                codec = created
                 waitingKey = true
                 outRunning = true
-                val started = c
+                val started: MediaCodec = created
                 val t = Thread({ outputLoop(started) }, "lumen-decode-out")
                 t.isDaemon = true
                 outThread = t
@@ -186,7 +187,6 @@ class VideoDecoder {
         synchronized(lock) { queueLocked(data, off, len, key) }
 
     private fun queueLocked(data: ByteArray, off: Int, len: Int, key: Boolean): Int {
-        run@ while (true) {
             val c = codec
             if (c == null) {
                 if (surface != null && sets.isNotEmpty() &&
@@ -244,6 +244,5 @@ class VideoDecoder {
                 stopLocked()
                 return DROPPED
             }
-        }
     }
 }

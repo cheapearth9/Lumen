@@ -85,7 +85,7 @@ object SoftKeys {
         plain[' '] = 49; plain['\n'] = 36; plain['\t'] = 48
 
         val from = "!@#$%^&*()_+{}|:\"<>?~"
-        val to = "1234567890-=[]\;'" + ",./`"
+        val to = "1234567890-=[]\\;'" + ",./`"
         for (i in from.indices) shifted[from[i]] = to[i]
     }
 
