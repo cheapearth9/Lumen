@@ -26,13 +26,47 @@ public sealed class MainForm : Form
     private HostServer.PairRequest? _request;
     private bool _running, _connected;
     private int _tick;
+    private readonly NotifyIcon _tray = new();
+    private readonly ToolStripMenuItem _trayToggle = new("Start");
+    private readonly bool _startHidden;
+    private bool _quit, _balloonShown;
 
-    public MainForm()
+    private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private static bool AutoStartOn()
     {
+        try { using var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey); return k?.GetValue("LumenHost") != null; } catch { return false; }
+    }
+    private static void SetAutoStart(bool on)
+    {
+        try
+        {
+            using var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey);
+            if (on) k.SetValue("LumenHost", $"\"{Application.ExecutablePath}\" --tray"); else k.DeleteValue("LumenHost", false);
+        }
+        catch { }
+    }
+
+    public void ShowFromTray()
+    {
+        if (IsDisposed) return;
+        Show();
+        ShowInTaskbar = true;
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Activate();
+    }
+
+    public MainForm(bool startHidden = false)
+    {
+        _startHidden = startHidden;
         _s = new HostCore(_platform, Environment.MachineName);
 
         Text = "Lumen Host";
-        Shown += async (_, _) => await OfferUpdateAsync();
+        Shown += async (_, _) =>
+        {
+            if (!_running) Toggle();                       // a background app: listen as soon as it opens
+            if (_startHidden) { Hide(); return; }
+            await OfferUpdateAsync();
+        };
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
         FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -173,7 +207,41 @@ public sealed class MainForm : Form
         };
         _timer.Start();
 
-        FormClosing += (_, _) => { _timer.Stop(); _s.Dispose(); };
+        // Tray icon: the app keeps running (and keeps listening) when the window is closed.
+        _tray.Icon = Icon ?? SystemIcons.Application;
+        _tray.Text = "Lumen Host";
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("Open Lumen Host", null, (_, _) => ShowFromTray());
+        _trayToggle.Click += (_, _) => Toggle();
+        menu.Items.Add(_trayToggle);
+        var auto = new ToolStripMenuItem("Start with Windows") { Checked = AutoStartOn(), CheckOnClick = true };
+        auto.CheckedChanged += (_, _) => SetAutoStart(auto.Checked);
+        menu.Items.Add(auto);
+        menu.Items.Add("Check for updates", null, async (_, _) => { ShowFromTray(); await OfferUpdateAsync(); });
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Quit", null, (_, _) => { _quit = true; Close(); });
+        _tray.ContextMenuStrip = menu;
+        _tray.DoubleClick += (_, _) => ShowFromTray();
+        _tray.Visible = true;
+
+        FormClosing += (_, e) =>
+        {
+            if (!_quit && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                Hide();
+                if (!_balloonShown)
+                {
+                    _balloonShown = true;
+                    _tray.ShowBalloonTip(3000, "Lumen Host is still running", "Use the tray icon to open it again or quit.", ToolTipIcon.Info);
+                }
+                return;
+            }
+            _timer.Stop();
+            _tray.Visible = false; _tray.Dispose();
+            _s.Dispose();
+            _platform.ReleaseVirtualDisplay();
+        };
     }
 
     private void SubmitPair()
@@ -217,6 +285,8 @@ public sealed class MainForm : Form
             _running = false;
             _connected = false;
             _start.Text = "Start";
+            _trayToggle.Text = "Start";
+            _platform.ReleaseVirtualDisplay();
             _display.Enabled = _encoder.Enabled = true;
             _stats.Text = ""; _cable.Text = "";
         }
@@ -229,6 +299,7 @@ public sealed class MainForm : Form
                 _s.Start();
                 _running = true;
                 _start.Text = "Stop";
+                _trayToggle.Text = "Stop";
                 _display.Enabled = _encoder.Enabled = false;
             }
             catch (Exception ex)
@@ -239,7 +310,11 @@ public sealed class MainForm : Form
         UpdateDot();
     }
 
-    private void UpdateDot() => _dot.BackColor = _connected ? Color.SeaGreen : (_running ? Color.Orange : Color.Gray);
+    private void UpdateDot()
+    {
+        _dot.BackColor = _connected ? Color.SeaGreen : (_running ? Color.Orange : Color.Gray);
+        _tray.Text = _connected ? "Lumen Host - connected" : (_running ? "Lumen Host - waiting for a device" : "Lumen Host - stopped");
+    }
 
     // MARK: Auto-update
 

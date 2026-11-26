@@ -23,8 +23,14 @@ public sealed class WindowsPlatform : IPlatformHost
 
     private int? _effective;
     private SudoVda? _vda;
+    private (int W, int H) _vdaSize;
 
-    public void EndSession() { _vda?.Dispose(); _vda = null; _effective = null; }
+    /// The virtual display deliberately outlives the session (like Sunshine/Apollo): Windows keeps the windows
+    /// and layout on it while the iPad is away, and reconnecting does not have to create a monitor again.
+    public void EndSession() { }
+
+    /// Removes the persistent virtual display (host stopped or app quit).
+    public void ReleaseVirtualDisplay() { _vda?.Dispose(); _vda = null; _effective = null; }
 
     /// True when the open-source Virtual Display Driver (or a compatible IddCx virtual monitor) is present.
     public static bool VirtualDisplayInstalled()
@@ -43,14 +49,16 @@ public sealed class WindowsPlatform : IPlatformHost
     public string? ApplyMode(bool extend, int clientW, int clientH, out bool extended)
     {
         extended = false;
+        if (!extend) { ReleaseVirtualDisplay(); return null; }
         _effective = null;
-        _vda?.Dispose(); _vda = null;
-        if (!extend) return null;
 
         // Best case: SudoVDA creates a monitor with exactly the iPad's resolution.
         if (SudoVda.Available())
         {
-            _vda = SudoVda.Create(Math.Max(640, clientW), Math.Max(480, clientH), 60, "Lumen");
+            int vw = Math.Max(640, clientW), vh = Math.Max(480, clientH);
+            if (_vda != null && (_vdaSize != (vw, vh) || !_vda.Alive)) ReleaseVirtualDisplay();   // other size: recreate
+            _vda ??= SudoVda.Create(vw, vh, 60, "Lumen");
+            _vdaSize = (vw, vh);
             if (_vda?.DeviceName is { } dn)
             {
                 for (int i = 0; i < 20; i++)
@@ -61,7 +69,7 @@ public sealed class WindowsPlatform : IPlatformHost
                     Thread.Sleep(150);
                 }
             }
-            _vda?.Dispose(); _vda = null;
+            ReleaseVirtualDisplay();
         }
         var all = Screen.AllScreens;
         int second = Array.FindIndex(all, s => !s.Primary);

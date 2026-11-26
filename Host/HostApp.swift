@@ -5,6 +5,7 @@ import Darwin
 
 @main
 struct LumenHostApp: App {
+    @NSApplicationDelegateAdaptor(HostAppDelegate.self) private var delegate
     @StateObject private var host = HostController()
 
     var body: some Scene {
@@ -12,10 +13,28 @@ struct LumenHostApp: App {
             HostView()
                 .environmentObject(host)
                 .frame(minWidth: 460, minHeight: 560)
-                .onAppear { Updater.checkAtLaunch() }
+                .onAppear { Updater.checkAtLaunch(); if !host.isRunning { host.start() } }
         }
         .windowResizability(.contentSize)
+
+        // Menu bar icon: closing the window leaves the host running in the background.
+        MenuBarExtra("Lumen Host", systemImage: host.clientConnected ? "display.and.arrow.down" : "display") {
+            Text(host.clientConnected ? "Connected" : (host.isRunning ? "Waiting for a device" : "Stopped"))
+            Divider()
+            Button("Open Lumen Host") {
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                for w in NSApp.windows where w.canBecomeMain { w.makeKeyAndOrderFront(nil) }
+            }
+            Button(host.isRunning ? "Stop" : "Start") { host.isRunning ? host.stop() : host.start() }
+            Divider()
+            Button("Quit Lumen Host") { NSApp.terminate(nil) }
+        }
     }
+}
+
+final class HostAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 @MainActor

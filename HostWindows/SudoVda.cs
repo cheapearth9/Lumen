@@ -50,6 +50,9 @@ internal sealed class SudoVda : IDisposable
     private Thread? _ping;
     private volatile bool _stop;
 
+    /// False once the handle is closed or the driver stopped answering pings.
+    public bool Alive => _h is { IsClosed: false } && !_stop && _ping is { IsAlive: true };
+
     public string? DeviceName { get; private set; }   // e.g. \\.\DISPLAY5
 
     /// True when the driver is installed and answers on its device interface.

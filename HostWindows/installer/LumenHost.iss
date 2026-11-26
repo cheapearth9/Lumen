@@ -53,7 +53,7 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Registry]
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "LumenHost"; ValueData: """{app}\{#AppExe}"""; Flags: uninsdeletevalue; Tasks: autostart
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "LumenHost"; ValueData: """{app}\{#AppExe}"" --tray"; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
 Filename: "{cmd}"; Parameters: "/c ""{app}\drivers\sudovda\install.bat"""; WorkingDir: "{app}\drivers\sudovda"; Flags: runhidden waituntilterminated; StatusMsg: "Installing virtual display driver..."; Tasks: vdd; Check: DriverBundled
