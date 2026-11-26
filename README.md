@@ -54,6 +54,9 @@ It connects automatically within a couple of seconds. Cable mode has no packet l
 - **Windows:** needs Apple's USB driver service. Install **iTunes** or the **Apple Devices** app from the Microsoft Store.
 - Cable auto-connect only starts while the iOS app is idle. If you tap *Disconnect* during a cable session, auto-connect
   pauses until you tap *Resume cable auto-connect*.
+- **Android (Windows and Linux hosts):** `adb` ships with the host. Turn on **USB debugging** once (Settings > Developer options), plug in, tap **Allow**
+  on the phone, and keep the Lumen app installed. The host forwards a port over the cable and connects by itself (it even opens the app if needed).
+  Linux packages depend on `adb` / `android-tools`. Mac host: iPhone/iPad cable only for now.
 
 ## Touch: touchpad and touchscreen mode
 Pick the mode on the connect screen, in Settings (gear icon) or in the stream menu.
@@ -86,7 +89,7 @@ Two buttons, in the iPad app (connect screen, Settings and stream menu). The com
 - **Extend** makes the iPad an additional screen. **Mac:** a virtual display is created automatically (uses a private macOS API;
   if macOS refuses, the app tells you and mirrors instead). **Windows:** uses the [SudoVDA](https://github.com/SudoMaker/SudoVDA) virtual display driver (the one Apollo uses): tick *Install the SudoVDA virtual display driver* in the installer
   (or press *Install virtual display* in the host window; it adds the driver's certificate to Windows' trusted store, like Apollo does). Lumen then creates a monitor at exactly the iPad's resolution when you press Extend
-  and removes it afterwards. Without the driver, Extend uses any extra display that already exists. **Linux:** streams a second monitor (or a dummy/virtual xrandr output) if one exists.
+  and keeps it after you disconnect (like Sunshine/Apollo), so your windows and layout are still there and reconnecting is almost instant; it is removed when you press Stop or quit the host. Without the driver, Extend uses any extra display that already exists. **Linux:** streams a second monitor (or a dummy/virtual xrandr output) if one exists.
 
 ## Controllers
 Connect an Xbox, PlayStation, Switch Pro or MFi controller to the iPhone/iPad over Bluetooth; it is forwarded to the computer as a virtual
@@ -164,10 +167,14 @@ A native Android client (`Android/`, Kotlin, plain Views) speaks the same protoc
   recent computers are remembered. On first connect the Android device shows a **5-digit code**: type it on the computer.
 - **Features:** HEVC video via MediaCodec (low latency), audio, Mirror/Extend, touchpad and touchscreen modes (native multi-touch on Windows/Linux hosts),
   hardware keyboard and mouse (mouse capture for games needs Android 8+, Ctrl+Alt+L), on-screen keyboard, game controllers, settings for resolution, frame rate and Wi-Fi bitrate (8-80 Mbps).
-- **Limits:** Wi-Fi/Ethernet only (no USB cable mode), no AirPlay/external-monitor mode, and the device must have a hardware HEVC decoder.
+- **USB cable:** see *Cable (USB)* above (adb, Windows/Linux hosts). **Video:** HEVC, or H.264 automatically when the device has no HEVC decoder.
+- **Limits:** no AirPlay/external-monitor mode.
 
 ## Known limits
-- One client at a time.
+- Windows and Linux hosts serve several devices at once (each *Extend* device gets its own virtual display; each *Mirror* device shows the display picked in the host window).
+  The Mac host serves one device at a time.
+- Video is HEVC when the device decodes it in hardware, otherwise H.264 (iPhone 5s/6, iPad Air 1/2: use the LumenLegacy app). No setting: it is chosen from the device.
+- The host keeps running in the tray / menu bar when you close its window; use the tray icon to open or quit it.
 - The host's mouse cursor is drawn into the video as well as the iPad pointer.
 - iPhone has limited hardware-mouse support in iOS; mouse capture works best on iPadOS.
 - Linux Wayland capture needs the GStreamer/PipeWire packages and is the least-tested path. Windows Extend needs the virtual display driver. Mac Extend uses a private API that Apple could change.
