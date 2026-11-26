@@ -21,16 +21,27 @@ public sealed class WindowsPlatform : IPlatformHost
 
     public IDisposable? StartAudio(Action<byte[]> packet) => new WindowsAudio(packet);
 
-    private int? _effective;
-    private SudoVda? _vda;
-    private (int W, int H) _vdaSize;
+    // Virtual displays outlive sessions (like Sunshine/Apollo): Windows keeps the windows and layout on them while the
+    // device is away, and reconnecting does not have to create a monitor again. One slot per simultaneous extend client.
+    private sealed class Slot { public int Index; public SudoVda? Vda; public (int W, int H) Size; public bool InUse; }
+    private readonly List<Slot> _slots = new();
+    private readonly object _slotLock = new();
 
-    /// The virtual display deliberately outlives the session (like Sunshine/Apollo): Windows keeps the windows
-    /// and layout on it while the iPad is away, and reconnecting does not have to create a monitor again.
-    public void EndSession() { }
+    /// Removes the persistent virtual displays (host stopped or app quit).
+    public void ReleaseVirtualDisplay()
+    {
+        lock (_slotLock)
+        {
+            foreach (var s in _slots) { try { s.Vda?.Dispose(); } catch { } s.Vda = null; }
+            _slots.Clear();
+        }
+    }
 
-    /// Removes the persistent virtual display (host stopped or app quit).
-    public void ReleaseVirtualDisplay() { _vda?.Dispose(); _vda = null; _effective = null; }
+    private void ReleaseIdleSlots()
+    {
+        lock (_slotLock)
+            foreach (var s in _slots.Where(x => !x.InUse)) { try { s.Vda?.Dispose(); } catch { } s.Vda = null; }
+    }
 
     /// True when the open-source Virtual Display Driver (or a compatible IddCx virtual monitor) is present.
     public static bool VirtualDisplayInstalled()
@@ -45,60 +56,116 @@ public sealed class WindowsPlatform : IPlatformHost
         catch { return false; }
     }
 
-    /// Extend = stream an additional display if one exists (e.g. a virtual display driver or an unused monitor); otherwise mirror.
-    public string? ApplyMode(bool extend, int clientW, int clientH, out bool extended)
+    /// One client's display + input. Extend = its own virtual display (or an unused monitor); mirror = the screen picked in the window.
+    public IPlatformSession OpenSession(bool extend, int clientW, int clientH, out string? note)
     {
-        extended = false;
-        if (!extend) { ReleaseVirtualDisplay(); return null; }
-        _effective = null;
-
-        // Best case: SudoVDA creates a monitor with exactly the iPad's resolution.
-        if (SudoVda.Available())
+        note = null;
+        string? deviceName = null;
+        Slot? slot = null;
+        if (!extend) ReleaseIdleSlots();
+        else
         {
-            int vw = Math.Max(640, clientW), vh = Math.Max(480, clientH);
-            if (_vda != null && (_vdaSize != (vw, vh) || !_vda.Alive)) ReleaseVirtualDisplay();   // other size: recreate
-            _vda ??= SudoVda.Create(vw, vh, 60, "Lumen");
-            _vdaSize = (vw, vh);
-            if (_vda?.DeviceName is { } dn)
+            // Best case: SudoVDA creates a monitor with exactly the device's resolution.
+            if (SudoVda.Available())
             {
-                for (int i = 0; i < 20; i++)
+                int vw = Math.Max(640, clientW), vh = Math.Max(480, clientH);
+                lock (_slotLock)
                 {
-                    var scr = Screen.AllScreens;
-                    int idx = Array.FindIndex(scr, s => string.Equals(s.DeviceName, dn, StringComparison.OrdinalIgnoreCase));
-                    if (idx >= 0) { _effective = idx; extended = true; return null; }
-                    Thread.Sleep(150);
+                    slot = _slots.FirstOrDefault(x => !x.InUse && x.Vda is { Alive: true } && x.Size == (vw, vh)) ?? _slots.FirstOrDefault(x => !x.InUse);
+                    if (slot == null) { slot = new Slot { Index = _slots.Count }; _slots.Add(slot); }
+                    slot.InUse = true;
+                    if (slot.Vda == null || !slot.Vda.Alive || slot.Size != (vw, vh))
+                    {
+                        try { slot.Vda?.Dispose(); } catch { }
+                        slot.Vda = SudoVda.Create(vw, vh, 60, "Lumen", slot.Index);
+                        slot.Size = (vw, vh);
+                    }
+                }
+                if (slot.Vda?.DeviceName is { } dn)
+                {
+                    for (int i = 0; i < 20 && deviceName == null; i++)
+                    {
+                        if (Screen.AllScreens.Any(sc => string.Equals(sc.DeviceName, dn, StringComparison.OrdinalIgnoreCase))) deviceName = dn;
+                        else Thread.Sleep(150);
+                    }
+                }
+                if (deviceName == null)
+                {
+                    lock (_slotLock) { try { slot.Vda?.Dispose(); } catch { } slot.Vda = null; slot.InUse = false; }
+                    slot = null;
                 }
             }
-            ReleaseVirtualDisplay();
-        }
-        var all = Screen.AllScreens;
-        int second = Array.FindIndex(all, s => !s.Primary);
-        if (second < 0 && VirtualDisplayInstalled())
-        {
-            // The virtual monitor exists but may be switched off or duplicated: ask Windows for "extend".
-            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("displayswitch.exe", "/extend") { UseShellExecute = false, CreateNoWindow = true })?.WaitForExit(4000); } catch { }
-            for (int i = 0; i < 12 && second < 0; i++)
+            if (deviceName == null)
             {
-                Thread.Sleep(250);
-                all = Screen.AllScreens;
-                second = Array.FindIndex(all, s => !s.Primary);
+                var all = Screen.AllScreens;
+                int second = Array.FindIndex(all, s => !s.Primary);
+                if (second < 0 && VirtualDisplayInstalled())
+                {
+                    // The virtual monitor exists but may be switched off or duplicated: ask Windows for "extend".
+                    try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("displayswitch.exe", "/extend") { UseShellExecute = false, CreateNoWindow = true })?.WaitForExit(4000); } catch { }
+                    for (int i = 0; i < 12 && second < 0; i++)
+                    {
+                        Thread.Sleep(250);
+                        all = Screen.AllScreens;
+                        second = Array.FindIndex(all, s => !s.Primary);
+                    }
+                }
+                if (second >= 0) deviceName = all[second].DeviceName;
+                else note = VirtualDisplayInstalled()
+                    ? "Extend: Windows did not enable the virtual display, so the screen is mirrored."
+                    : "Extend needs a virtual display driver. Click \"Install virtual display\" in the Lumen Host window (one time), then try again. Mirroring for now.";
             }
         }
-        if (second >= 0) { _effective = second; extended = true; return null; }
-        return VirtualDisplayInstalled()
-            ? "Extend: Windows did not enable the virtual display, so the screen is mirrored."
-            : "Extend needs a virtual display driver. Click \"Install virtual display\" in the Lumen Host window (one time), then try again. Mirroring for now.";
+        return new WinSession(this, deviceName, slot);
     }
+
+    private sealed class WinSession : IPlatformSession
+    {
+        private readonly WindowsPlatform _p;
+        private readonly string? _device;
+        private readonly Slot? _slot;
+        private readonly InputInjector _input = new();
+
+        public WinSession(WindowsPlatform p, string? device, Slot? slot)
+        {
+            _p = p; _device = device; _slot = slot;
+            Extended = device != null;
+            _input.Configure(Screen_().Bounds, SystemInformation.VirtualScreen);
+        }
+
+        public bool Extended { get; }
+
+        private Screen Screen_()
+        {
+            var all = Screen.AllScreens;
+            if (_device != null)
+                foreach (var s in all) if (string.Equals(s.DeviceName, _device, StringComparison.OrdinalIgnoreCase)) return s;
+            return all[Math.Clamp(_p.ScreenIndex, 0, all.Length - 1)];
+        }
+
+        public (int W, int H) SourceSize { get { var b = Screen_().Bounds; return (b.Width, b.Height); } }
+        public void HandleInput(InputEvent e) => _input.Handle(e);
+        public void ReleaseInput() => _input.ReleaseAll();
+        public Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bps, bool needScale, bool h264, Action<string> status) =>
+            _p.BuildCandidatesFor(Screen_(), w, h, fps, bps, needScale, h264, status);
+
+        public void Dispose()
+        {
+            try { _input.ReleaseAll(); } catch { }
+            if (_slot != null) lock (_p._slotLock) _slot.InUse = false;
+        }
+    }
+
     public string FfmpegPath => FfmpegUtil.FindExe();
 
     private Screen CurrentScreen()
     {
         var all = Screen.AllScreens;
-        return all[Math.Clamp(_effective ?? ScreenIndex, 0, all.Length - 1)];
+        return all[Math.Clamp(ScreenIndex, 0, all.Length - 1)];
     }
 
+    // Single-display members required by the interface; Windows serves clients through OpenSession instead.
     public (int W, int H) SourceSize { get { var b = CurrentScreen().Bounds; return (b.Width, b.Height); } }
-
     public void PrepareInput() => _input.Configure(CurrentScreen().Bounds, SystemInformation.VirtualScreen);
     public void HandleInput(InputEvent e) => _input.Handle(e);
     public void ReleaseInput() => _input.ReleaseAll();
@@ -240,10 +307,12 @@ public sealed class WindowsPlatform : IPlatformHost
         return a;
     }
 
-    public async Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bps, bool needScale, bool h264, Action<string> status)
+    public Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bps, bool needScale, bool h264, Action<string> status) =>
+        BuildCandidatesFor(CurrentScreen(), w, h, fps, bps, needScale, h264, status);
+
+    private async Task<List<CaptureCandidate>> BuildCandidatesFor(Screen screen, int w, int h, int fps, int bps, bool needScale, bool h264, Action<string> status)
     {
         var exe = FfmpegPath;
-        var screen = CurrentScreen();
         var (adapter, output) = Dxgi.Find(screen.DeviceName) ?? (0, Math.Max(0, Array.IndexOf(Screen.AllScreens, screen)));
 
         var available = await DetectAsync(exe, h264, status);

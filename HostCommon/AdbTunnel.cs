@@ -19,8 +19,8 @@ public sealed class AdbTunnel : IDisposable
     private int _gen;
     private string? _adb;
 
-    public Func<bool> WantsTunnel { get; set; } = () => true;
-    public Action<Socket>? OnTunnel { get; set; }
+    public Func<string, bool> WantsTunnel { get; set; } = _ => true;
+    public Action<Socket, string>? OnTunnel { get; set; }
 
     /// Android devices attached and authorised for debugging.
     public int DeviceCount { get { lock (_lock) return _ready.Count; } }
@@ -98,11 +98,10 @@ public sealed class AdbTunnel : IDisposable
             _ready = ready;
             foreach (var gone in _ports.Keys.Where(k => !ready.Contains(k)).ToList()) { _ports.Remove(gone); _fails.Remove(gone); _launched.Remove(gone); }
         }
-        if (!WantsTunnel()) return;
-
         foreach (var serial in ready)
         {
             if (!Alive(gen)) return;
+            if (!WantsTunnel("adb:" + serial)) continue;
             int port;
             lock (_lock) { if (!_ports.TryGetValue(serial, out port)) port = 0; }
             if (port == 0)
@@ -115,8 +114,8 @@ public sealed class AdbTunnel : IDisposable
             if (sock != null)
             {
                 lock (_lock) _fails[serial] = 0;
-                OnTunnel?.Invoke(sock);
-                return;
+                OnTunnel?.Invoke(sock, "adb:" + serial);
+                continue;
             }
             int fails;
             lock (_lock) { _fails[serial] = fails = _fails.GetValueOrDefault(serial) + 1; }

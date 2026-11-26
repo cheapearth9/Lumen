@@ -101,7 +101,7 @@ internal sealed class SudoVda : IDisposable
     }
 
     /// Creates a virtual monitor. Returns null (and logs why) if the driver is missing or refuses.
-    public static SudoVda? Create(int width, int height, int refresh, string name)
+    public static SudoVda? Create(int width, int height, int refresh, string name, int slot = 0)
     {
         var v = new SudoVda { _h = Open() };
         if (v._h == null) return null;
@@ -112,12 +112,12 @@ internal sealed class SudoVda : IDisposable
 
             // Same identity every time (per computer), so Windows remembers this monitor's position, scale and resolution
             // between sessions instead of treating it as a brand-new display on every connect.
-            v._monitor = new Guid(System.Security.Cryptography.MD5.HashData(Encoding.UTF8.GetBytes("lumen-vda-" + Environment.MachineName)));
+            v._monitor = new Guid(System.Security.Cryptography.MD5.HashData(Encoding.UTF8.GetBytes("lumen-vda-" + Environment.MachineName + (slot == 0 ? "" : "-" + slot))));
             byte[] Pad(string s) { var b = new byte[14]; Encoding.ASCII.GetBytes(s.Length > 13 ? s[..13] : s).CopyTo(b, 0); return b; }
             var p = new AddParams
             {
                 Width = (uint)width, Height = (uint)height, RefreshRate = (uint)refresh, MonitorGuid = v._monitor,
-                DeviceName = Pad(name), SerialNumber = Pad("LUMEN0001")
+                DeviceName = Pad(name), SerialNumber = Pad("LUMEN000" + (slot + 1))
             };
             IntPtr pin = Marshal.AllocHGlobal(Marshal.SizeOf<AddParams>()), pout = Marshal.AllocHGlobal(Marshal.SizeOf<AddOut>());
             try

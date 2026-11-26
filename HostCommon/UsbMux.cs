@@ -20,8 +20,8 @@ public sealed class UsbMux : IDisposable
     private int _generation;
     private Socket? _listenClient;
 
-    public Func<bool> WantsTunnel { get; set; } = () => true;
-    public Action<Socket>? OnTunnel { get; set; }
+    public Func<string, bool> WantsTunnel { get; set; } = _ => true;
+    public Action<Socket, string>? OnTunnel { get; set; }
 
     /// True once we have a working connection to the Apple Mobile Device Service.
     public bool DaemonReachable { get; private set; }
@@ -100,13 +100,14 @@ public sealed class UsbMux : IDisposable
         while (Alive(gen))
         {
             Thread.Sleep(1500);
-            if (!WantsTunnel()) continue;
             List<long> ids;
             lock (_lock) ids = _devices.ToList();
             foreach (var id in ids)
             {
+                string key = "usb:" + id;
+                if (!WantsTunnel(key)) continue;
                 var tunnel = OpenTunnel(id);
-                if (tunnel != null) { OnTunnel?.Invoke(tunnel); break; }
+                if (tunnel != null) OnTunnel?.Invoke(tunnel, key);
             }
         }
     }

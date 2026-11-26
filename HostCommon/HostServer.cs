@@ -14,6 +14,23 @@ public interface ILink
     SecureSession? Session { get; set; }
     /// Pairing attempt in progress on this link.
     PairingHost? Pairing { get; set; }
+    /// Id of the paired device on this link (from its handshake); the same device reconnecting replaces its old link.
+    string? KeyId { get; set; }
+    /// Cable links: which attached phone this tunnel belongs to ("usb:<id>" / "adb:<serial>"), so each phone gets one tunnel.
+    string? DeviceKey { get; set; }
+}
+
+/// One connected device. HostCore keeps its session state in Tag.
+public sealed class HostClient
+{
+    internal ILink Link = null!;
+    internal DateTime LastHeard = DateTime.UtcNow;
+    internal uint FrameCounter, AudioCounter;
+    internal readonly HashSet<uint> Recent = new();
+    internal readonly Queue<uint> RecentOrder = new();
+    public object? Tag { get; set; }
+    public bool IsCable => Link is TcpLink;
+    public long Dropped => (Link as TcpLink)?.Dropped ?? 0;
 }
 
 /// Wi-Fi / Ethernet: one datagram per packet.
@@ -24,6 +41,8 @@ internal sealed class UdpLink : ILink
     public DateTime LastSeen = DateTime.UtcNow;
     public SecureSession? Session { get; set; }
     public PairingHost? Pairing { get; set; }
+    public string? KeyId { get; set; }
+    public string? DeviceKey { get; set; }
 
     public UdpLink(Socket sock, EndPoint remote) { _sock = sock; Remote = remote; }
 
@@ -54,6 +73,8 @@ internal sealed class TcpLink : ILink
     public readonly DateTime Created = DateTime.UtcNow;
     public SecureSession? Session { get; set; }
     public PairingHost? Pairing { get; set; }
+    public string? KeyId { get; set; }
+    public string? DeviceKey { get; set; }
     public Action<byte[]>? OnPacket;
     public Action? OnClosed;
 
@@ -140,7 +161,7 @@ internal sealed class TcpLink : ILink
     }
 }
 
-/// Serves a single client at a time over UDP (advertised with mDNS) or a USB tunnel.
+/// Serves several clients at once over UDP (advertised with mDNS) or USB tunnels.
 /// A link only becomes the active client once it sends a valid hello.
 public sealed class HostServer : IDisposable
 {
@@ -148,11 +169,7 @@ public sealed class HostServer : IDisposable
     private Socket? _udp;
     private readonly Dictionary<string, UdpLink> _udpLinks = new();
     private readonly List<TcpLink> _tunnels = new();
-    private ILink? _client;
-    private DateTime _lastHeard = DateTime.UtcNow;
-    private uint _frameCounter, _audioCounter;
-    private readonly HashSet<uint> _recent = new();
-    private readonly Queue<uint> _recentOrder = new();
+    private readonly List<HostClient> _clients = new();
     private System.Threading.Timer? _watchdog;
     private bool _running;
 
@@ -181,12 +198,18 @@ public sealed class HostServer : IDisposable
     private int _pairFailures;
     private DateTime _lockedUntil;
 
-    public event Action<HelloInfo>? Hello;
-    public event Action<InputEvent>? Input;
-    public event Action<bool>? ClientChanged;
+    public event Action<HostClient, HelloInfo>? Hello;
+    public event Action<HostClient, InputEvent>? Input;
+    public event Action<HostClient, bool>? ClientChanged;
 
-    /// True while no client is connected and no tunnel is waiting for its hello.
-    public bool WantsTunnel { get { lock (_gate) return _running && _client == null && _tunnels.Count == 0; } }
+    public int ClientCount { get { lock (_gate) return _clients.Count; } }
+
+    /// True while the phone behind `deviceKey` has neither a connected client nor a tunnel waiting for its hello.
+    public bool WantsTunnel(string deviceKey)
+    {
+        lock (_gate)
+            return _running && !_tunnels.Any(t => t.DeviceKey == deviceKey) && !_clients.Any(c => c.Link.DeviceKey == deviceKey);
+    }
 
     public void Start()
     {
@@ -215,39 +238,39 @@ public sealed class HostServer : IDisposable
     public void Stop()
     {
         List<TcpLink> tunnels;
-        ILink? client;
+        List<HostClient> clients;
         Socket? udp;
         lock (_gate)
         {
             _running = false;
             tunnels = _tunnels.ToList(); _tunnels.Clear();
-            client = _client; _client = null;
+            clients = _clients.ToList(); _clients.Clear();
             udp = _udp; _udp = null;
             _udpLinks.Clear();
         }
         _watchdog?.Dispose(); _watchdog = null;
         foreach (var t in tunnels) t.Close();
-        client?.Close();
+        foreach (var c in clients) c.Link.Close();
         try { udp?.Close(); } catch { }
-        if (client != null) ClientChanged?.Invoke(false);
+        foreach (var c in clients) ClientChanged?.Invoke(c, false);
     }
 
     public void Dispose() => Stop();
 
     private void Tick()
     {
-        ILink? drop = null;
+        List<HostClient> drop;
         List<TcpLink> stale;
         lock (_gate)
         {
-            if (_client != null && (DateTime.UtcNow - _lastHeard).TotalSeconds > 5) drop = _client;
+            drop = _clients.Where(c => (DateTime.UtcNow - c.LastHeard).TotalSeconds > 5).ToList();
             // A tunnel that never says hello (app busy / not ready) is closed so the next attempt starts clean.
             stale = _tunnels.Where(t => (DateTime.UtcNow - t.Created).TotalSeconds > 4).ToList();
-            foreach (var k in _udpLinks.Where(kv => !ReferenceEquals(kv.Value, _client) && (DateTime.UtcNow - kv.Value.LastSeen).TotalSeconds > 60)
+            foreach (var k in _udpLinks.Where(kv => !_clients.Any(c => ReferenceEquals(c.Link, kv.Value)) && (DateTime.UtcNow - kv.Value.LastSeen).TotalSeconds > 60)
                                        .Select(kv => kv.Key).ToList())
                 _udpLinks.Remove(k);
         }
-        if (drop != null) DropClient(drop);
+        foreach (var c in drop) DropClient(c);
         foreach (var t in stale) t.Close();
     }
 
@@ -286,9 +309,9 @@ public sealed class HostServer : IDisposable
     // MARK: Cable
 
     /// Called by the usbmux watcher with a connected tunnel.
-    public void AddTunnel(Socket tunnel)
+    public void AddTunnel(Socket tunnel, string deviceKey = "")
     {
-        var link = new TcpLink(tunnel);
+        var link = new TcpLink(tunnel) { DeviceKey = deviceKey };
         link.OnPacket = d => HandlePacket(d, link);
         link.OnClosed = () => LinkClosed(link);
         lock (_gate)
@@ -301,21 +324,25 @@ public sealed class HostServer : IDisposable
 
     // MARK: Client management
 
-    private void DropClient(ILink link)
+    private void DropClient(HostClient client)
     {
         lock (_gate)
         {
-            if (!ReferenceEquals(_client, link)) return;
-            _client = null;
+            if (!_clients.Remove(client)) return;
         }
-        link.Close();
-        ClientChanged?.Invoke(false);
+        client.Link.Close();
+        ClientChanged?.Invoke(client, false);
     }
 
     private void LinkClosed(ILink link)
     {
-        if (link is TcpLink t) lock (_gate) _tunnels.Remove(t);
-        DropClient(link);
+        HostClient? c;
+        lock (_gate)
+        {
+            if (link is TcpLink t) _tunnels.Remove(t);
+            c = _clients.FirstOrDefault(x => ReferenceEquals(x.Link, link));
+        }
+        if (c != null) DropClient(c);
     }
 
     private void HandlePacket(byte[] raw, ILink link)
@@ -346,6 +373,7 @@ public sealed class HostServer : IDisposable
                 var s = SecureSession.Accept(hello, secret, out var reply);
                 if (s == null) return;
                 link.Session = s;
+                link.KeyId = Convert.ToHexString(id);
                 link.Send(new[] { Wire.Simple(PacketType.Handshake, 0, reply) }, false);
                 return;
             }
@@ -444,50 +472,54 @@ public sealed class HostServer : IDisposable
             return;
         }
 
-        ILink? old = null;
-        bool becameConnected = false;
+        HostClient? client;
+        List<HostClient> replaced = new();
+        bool isNew = false;
         lock (_gate)
         {
-            if (!ReferenceEquals(_client, link))
+            client = _clients.FirstOrDefault(c => ReferenceEquals(c.Link, link));
+            if (client == null)
             {
                 if (h.Type != PacketType.Hello) return;
-                old = _client;
-                becameConnected = old == null;
-                _client = link;
-                _recent.Clear(); _recentOrder.Clear();
+                client = new HostClient { Link = link };
+                // The same paired device reconnecting (new Wi-Fi port, or cable instead of Wi-Fi) replaces its old connection.
+                if (link.KeyId != null) replaced = _clients.Where(c => c.Link.KeyId == link.KeyId).ToList();
+                foreach (var r in replaced) _clients.Remove(r);
+                _clients.Add(client);
                 if (link is TcpLink t) _tunnels.Remove(t);
+                isNew = true;
             }
-            _lastHeard = DateTime.UtcNow;
+            client.LastHeard = DateTime.UtcNow;
         }
-        if (old != null && !ReferenceEquals(old, link)) old.Close();
-        if (becameConnected) ClientChanged?.Invoke(true);
+        foreach (var r in replaced) { r.Link.Close(); ClientChanged?.Invoke(r, false); }
+        if (isNew) ClientChanged?.Invoke(client, true);
 
         switch (h.Type)
         {
             case PacketType.Hello:
-                if (HelloInfo.TryDecode(payload.Span, out var info)) Hello?.Invoke(info);
+                if (HelloInfo.TryDecode(payload.Span, out var info)) Hello?.Invoke(client, info);
                 break;
             case PacketType.Input:
-                if (IsNew(h.Id) && InputEvent.TryDecode(payload.Span, out var e)) Input?.Invoke(e);
+                if (IsNew(client, h.Id) && InputEvent.TryDecode(payload.Span, out var e)) Input?.Invoke(client, e);
                 break;
             case PacketType.Ping:
                 SendSecure(link, new[] { Wire.Simple(PacketType.Ping, h.Id) }, false);
                 break;
             case PacketType.Bye:
-                DropClient(link);
+                DropClient(client);
                 break;
             // KeyframeRequest: ffmpeg can't be told to emit an IDR on demand; periodic keyframes (1 s) cover loss.
         }
     }
 
     /// Input events are sometimes sent twice over Wi-Fi; ignore sequence numbers we have already seen.
-    private bool IsNew(uint seq)
+    private bool IsNew(HostClient c, uint seq)
     {
         lock (_gate)
         {
-            if (!_recent.Add(seq)) return false;
-            _recentOrder.Enqueue(seq);
-            if (_recentOrder.Count > 512) _recent.Remove(_recentOrder.Dequeue());
+            if (!c.Recent.Add(seq)) return false;
+            c.RecentOrder.Enqueue(seq);
+            if (c.RecentOrder.Count > 512) c.Recent.Remove(c.RecentOrder.Dequeue());
             return true;
         }
     }
@@ -495,49 +527,39 @@ public sealed class HostServer : IDisposable
     // MARK: Sending
 
     /// Tell the client something (progress or an error). Errors make the client show the message and disconnect.
-    public void SendStatus(string text, bool error)
+    public void SendStatus(HostClient c, string text, bool error)
     {
-        ILink? c;
-        lock (_gate) c = _client;
-        if (c == null) return;
         var t = System.Text.Encoding.UTF8.GetBytes(text.Length > 300 ? text[..300] : text);
         var body = new byte[1 + t.Length];
         body[0] = error ? (byte)1 : (byte)0;
         t.CopyTo(body, 1);
-        SendSecure(c, new[] { Wire.Simple(PacketType.Status, 0, body) }, false);
+        SendSecure(c.Link, new[] { Wire.Simple(PacketType.Status, 0, body) }, false);
     }
 
-    public void SendWelcome(WelcomeInfo w)
-    {
-        ILink? c;
-        lock (_gate) c = _client;
-        if (c != null) SendSecure(c, new[] { Wire.Simple(PacketType.Welcome, 0, w.Encode()) }, false);
-    }
+    public void SendWelcome(HostClient c, WelcomeInfo w) =>
+        SendSecure(c.Link, new[] { Wire.Simple(PacketType.Welcome, 0, w.Encode()) }, false);
 
     /// 960-byte PCM audio packet (48 kHz stereo s16le, 240 frames).
-    public void SendAudio(byte[] pcm)
+    public void SendAudio(HostClient c, byte[] pcm)
     {
-        ILink? c;
         uint id;
-        lock (_gate) { c = _client; if (c != null) id = ++_audioCounter; else return; }
-        SendSecure(c, new[] { Wire.Simple(PacketType.Audio, id, pcm) }, true);
+        lock (_gate) id = ++c.AudioCounter;
+        SendSecure(c.Link, new[] { Wire.Simple(PacketType.Audio, id, pcm) }, true);
     }
 
-    public void SendVideo(byte[] payload, bool keyframe, uint timestampMs)
+    public void SendVideo(HostClient c, byte[] payload, bool keyframe, uint timestampMs)
     {
-        ILink? c;
         uint id;
-        lock (_gate) { c = _client; if (c != null) id = ++_frameCounter; else return; }
+        lock (_gate) id = ++c.FrameCounter;
         // Keyframes are never dropped: losing one stalls the picture for a whole second.
-        SendSecure(c, Wire.Fragment(PacketType.Video, keyframe ? (byte)1 : (byte)0, id, timestampMs, payload), !keyframe);
+        SendSecure(c.Link, Wire.Fragment(PacketType.Video, keyframe ? (byte)1 : (byte)0, id, timestampMs, payload), !keyframe);
     }
-
-    public bool ClientIsCable { get { lock (_gate) return _client is TcpLink; } }
-    public long DroppedFrames { get { lock (_gate) return (_client as TcpLink)?.Dropped ?? 0; } }
 
     /// A frame was lost before it could be sent: burn its id so the client notices the gap and waits for a keyframe.
-    public void SkipFrame()
+    public void SkipFrame(HostClient c)
     {
-        lock (_gate) { if (_client != null) _frameCounter++; }
+        lock (_gate) c.FrameCounter++;
     }
+
+    public long DroppedFrames { get { lock (_gate) return _clients.Sum(c => c.Dropped); } }
 }

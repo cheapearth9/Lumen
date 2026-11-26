@@ -59,10 +59,19 @@ public sealed class InputInjector
         try { if (_vanishWas == true) SystemParametersInfo(0x1021, 0, (IntPtr)1, 0); } catch { }
     }
 
+    private static int _users;
+    private static int _nextBase;
+    private bool _configured;
+    /// Touch ids of this injector live in their own range so several devices can touch at the same time.
+    private readonly int _idBase = (Interlocked.Increment(ref _nextBase) % 40) * 100;
+
     public void Configure(Rectangle monitor, Rectangle virtualScreen)
     {
-        DisablePointerVanish();
-        lock (_lock) { _monitor = monitor; _virtual = virtualScreen; }
+        lock (_lock)
+        {
+            _monitor = monitor; _virtual = virtualScreen;
+            if (!_configured) { _configured = true; if (Interlocked.Increment(ref _users) == 1) DisablePointerVanish(); }
+        }
     }
 
     public void Handle(InputEvent e)
@@ -106,12 +115,12 @@ public sealed class InputInjector
     /// Release everything that is still held (client disconnected) so nothing gets stuck.
     public void ReleaseAll()
     {
-        RestorePointerVanish();
         lock (_lock)
         {
+            if (_configured) { _configured = false; if (Interlocked.Decrement(ref _users) == 0) RestorePointerVanish(); }
             foreach (var b in _heldButtons.ToArray()) Button(b, false);
             foreach (var k in _heldKeys.ToArray()) Key(k, false);
-            foreach (var id in _contactIds()) EnqueueTouch(id, 3, 0, 0);
+            foreach (var id in _contactIds()) EnqueueTouch(id - _idBase, 3, 0, 0);
             for (int i = 0; i < 4; i++) _pads.Presence(i, false);
         }
     }
@@ -147,32 +156,34 @@ public sealed class InputInjector
     [DllImport("user32.dll", SetLastError = true)] private static extern bool InitializeTouchInjection(uint maxCount, uint dwMode);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool InjectTouchInput(uint count, POINTER_TOUCH_INFO[] contacts);
 
-    private int[] _contactIds() { lock (_touchLock) return _contacts.Keys.ToArray(); }
+    private int[] _contactIds() { lock (_touchLock) return _contacts.Keys.Where(k => k >= _idBase && k < _idBase + 100).ToArray(); }
 
     // Touch injection is tied to the thread that initialised it, and input packets arrive on several threads,
     // so every touch goes through one dedicated worker that initialises and injects.
-    private readonly object _touchLock = new();
-    private System.Collections.Concurrent.BlockingCollection<(int Id, int Phase, int X, int Y)>? _touchQ;
+    private static readonly object _touchLock = new();
+    private static System.Collections.Concurrent.BlockingCollection<(int Id, int Phase, int X, int Y, Rectangle Monitor)>? _touchQ;
 
     private void EnqueueTouch(int id, int phase, int x, int y)
     {
-        if (_touchQ == null)
+        lock (_touchLock)
         {
-            _touchQ = new();
-            var q = _touchQ;
-            new Thread(() =>
+            if (_touchQ == null)
             {
-                try { InitializeTouchInjection(10, 1); } catch { }
-                foreach (var t in q.GetConsumingEnumerable())
-                    lock (_touchLock) Touch(t.Id, t.Phase, t.X, t.Y);
-            }) { IsBackground = true, Name = "lumen-touch" }.Start();
+                var q = _touchQ = new();
+                new Thread(() =>
+                {
+                    try { InitializeTouchInjection(10, 1); } catch { }
+                    foreach (var t in q.GetConsumingEnumerable())
+                        lock (_touchLock) Touch(t.Id, t.Phase, t.X, t.Y, t.Monitor);
+                }) { IsBackground = true, Name = "lumen-touch" }.Start();
+            }
         }
-        _touchQ.Add((id, phase, x, y));
+        _touchQ.Add((_idBase + id, phase, x, y, _monitor));
     }
 
     private static bool _touchInit, _touchOk;
-    private readonly Dictionary<int, POINTER_TOUCH_INFO> _contacts = new();
-    private readonly Dictionary<int, long> _downAt = new();
+    private static readonly Dictionary<int, POINTER_TOUCH_INFO> _contacts = new();
+    private static readonly Dictionary<int, long> _downAt = new();
 
     /// True when Windows lets us inject touch (Windows 8 or newer).
     public static bool TouchAvailable
@@ -205,16 +216,16 @@ public sealed class InputInjector
     }
 
     /// phase: 0 down, 1 move, 2 up, 3 cancel; x/y are 0..65535 across the streamed display.
-    private void Touch(int id, int phase, int nx, int ny)
+    private static void Touch(int id, int phase, int nx, int ny, Rectangle monitor)
     {
         if (!TouchAvailable) return;
         const uint NEW = 0x1, INRANGE = 0x2, INCONTACT = 0x4, FIRSTBUTTON = 0x10, CANCELED = 0x8000, DOWN = 0x10000, UPDATE = 0x20000, UP = 0x40000;
 
-        int px = _monitor.X + (int)Math.Round(nx / 65535.0 * (_monitor.Width - 1));
-        int py = _monitor.Y + (int)Math.Round(ny / 65535.0 * (_monitor.Height - 1));
+        int px = monitor.X + (int)Math.Round(nx / 65535.0 * (monitor.Width - 1));
+        int py = monitor.Y + (int)Math.Round(ny / 65535.0 * (monitor.Height - 1));
 
         // A lost 'up' would make Windows reject the next 'down' for the same id: lift the stale contact first.
-        if (phase == 0 && _contacts.ContainsKey(id)) Touch(id, 3, 0, 0);
+        if (phase == 0 && _contacts.ContainsKey(id)) Touch(id, 3, 0, 0, monitor);
         // Windows ignores a tap whose down and up arrive in the same instant, so keep them a few ms apart.
         if (phase == 2 && _downAt.TryGetValue(id, out var t0))
         {

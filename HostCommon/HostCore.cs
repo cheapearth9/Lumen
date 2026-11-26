@@ -34,6 +34,47 @@ public interface IPlatformHost
         extended = false;
         return extend ? "Extend is not available on this computer, so the screen is mirrored." : null;
     }
+
+    /// Start a session for one client. Platforms that can serve several clients at once (separate virtual displays and
+    /// input mapping per client) override this; the default shares the single display state.
+    IPlatformSession OpenSession(bool extend, int clientW, int clientH, out string? note)
+    {
+        var s = new SharedPlatformSession(this, extend, clientW, clientH);
+        note = s.Note;
+        return s;
+    }
+}
+
+/// One client's view of the platform: its own display (a mirror of the picked screen or a virtual display of its own),
+/// input mapping and capture pipelines. Disposing it ends the session (a virtual display may stay around for the next one).
+public interface IPlatformSession : IDisposable
+{
+    bool Extended { get; }
+    (int W, int H) SourceSize { get; }
+    void HandleInput(InputEvent e);
+    void ReleaseInput();
+    Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bitrateBps, bool needScale, bool h264, Action<string> status);
+}
+
+/// Platforms with a single display state (Linux) share it between sessions.
+internal sealed class SharedPlatformSession : IPlatformSession
+{
+    private readonly IPlatformHost _p;
+    public bool Extended { get; }
+    public string? Note { get; }
+    public SharedPlatformSession(IPlatformHost p, bool extend, int w, int h)
+    {
+        _p = p;
+        Note = p.ApplyMode(extend, w, h, out bool ex);
+        Extended = ex;
+        p.PrepareInput();
+    }
+    public (int W, int H) SourceSize => _p.SourceSize;
+    public void HandleInput(InputEvent e) => _p.HandleInput(e);
+    public void ReleaseInput() => _p.ReleaseInput();
+    public Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bps, bool needScale, bool h264, Action<string> status) =>
+        _p.BuildCandidatesAsync(w, h, fps, bps, needScale, h264, status);
+    public void Dispose() => _p.EndSession();
 }
 
 /// Shared glue: client hello -> ffmpeg capture+encode -> network, and client input -> platform input injection.
@@ -45,16 +86,25 @@ public sealed class HostCore : IDisposable
     private readonly AdbTunnel _adb = new();
     private readonly SemaphoreSlim _ctl = new(1, 1);
 
-    private FfmpegPipeline? _ff;
-    private HelloInfo? _active;
-    private volatile bool _gotKey;
-    private (int W, int H, int Fps) _size;
-    private bool _lastClientExtend;
+    /// Everything that belongs to one connected device.
+    private sealed class Session
+    {
+        public HostClient Client = null!;
+        public HelloInfo Hello;
+        public bool Active;
+        public IPlatformSession? Plat;
+        public FfmpegPipeline? Ff;
+        public IDisposable? Audio;
+        public volatile bool GotKey;
+        public (int W, int H, int Fps) Size;
+    }
+
+    private readonly List<Session> _sessions = new();
     private ServiceDiscovery? _sd;
     private System.Threading.Timer? _awake;
-    private IDisposable? _audio;
     private bool _extended;
     private bool? _modeOverride;      // set by the host's Mirror / Extend buttons
+    private bool _lastClientExtend;
     private long _bytes;
     private int _frames;
 
@@ -63,13 +113,14 @@ public sealed class HostCore : IDisposable
     public int AndroidCableDevices => _adb.DeviceCount;
     public bool AndroidNeedsAuthorization => _adb.NeedsAuthorization;
     public bool AdbFound => _adb.AdbFound;
+    public int ClientCount => _server.ClientCount;
     public string ServerName { get; }
     public PairedStore Paired => _server.Paired;
     /// A device wants to pair: ask the user to type the 5-digit code the device shows, then call request.Submit(code).
     public event Action<HostServer.PairRequest>? PairRequested { add => _server.PairRequested += value; remove => _server.PairRequested -= value; }
     public event Action? PairResolved { add => _server.PairResolved += value; remove => _server.PairResolved -= value; }
 
-    /// Host-side Mirror / Extend choice (null = follow whatever the client asked for). Restarts a running session.
+    /// Host-side Mirror / Extend choice (null = follow whatever the client asked for). Restarts running sessions.
     public bool? ModeOverride => _modeOverride;
     public bool Extended => _extended;
     public event Action<bool>? ModeChanged;
@@ -77,12 +128,14 @@ public sealed class HostCore : IDisposable
     public void SetMode(bool extend)
     {
         _modeOverride = extend;
-        var h = _active;
-        if (h != null) _ = Task.Run(() => BeginAsync(h.Value, force: true));
-        else ModeChanged?.Invoke(extend);
+        List<Session> live;
+        lock (_sessions) live = _sessions.Where(x => x.Active).ToList();
+        if (live.Count == 0) { ModeChanged?.Invoke(extend); return; }
+        foreach (var x in live) { var sx = x; _ = Task.Run(() => BeginAsync(sx.Client, sx.Hello, force: true)); }
     }
 
     public event Action<string>? Status;
+    /// True when at least one device is connected (raised whenever that changes).
     public event Action<bool>? ClientChanged;
 
     public HostCore(IPlatformHost platform, string name)
@@ -91,16 +144,12 @@ public sealed class HostCore : IDisposable
         ServerName = name;
         _server.ServerName = name;
         _server.PlatformId = platform.PlatformId;
-        _server.Hello += h => _ = Task.Run(() => BeginAsync(h));
-        _server.Input += _p.HandleInput;
-        _server.ClientChanged += connected =>
+        _server.Hello += (c, h) => _ = Task.Run(() => BeginAsync(c, h));
+        _server.Input += (c, e) => { if (c.Tag is Session { Plat: { } plat }) plat.HandleInput(e); };
+        _server.ClientChanged += (c, connected) =>
         {
-            if (!connected)
-            {
-                _p.ReleaseInput();
-                _ = Task.Run(EndAsync);
-            }
-            ClientChanged?.Invoke(connected);
+            if (!connected) _ = Task.Run(() => EndAsync(c));
+            ClientChanged?.Invoke(_server.ClientCount > 0);
         };
     }
 
@@ -111,10 +160,10 @@ public sealed class HostCore : IDisposable
         _server.Start();
         if (cable)
         {
-            _usb.WantsTunnel = () => _server.WantsTunnel;
+            _usb.WantsTunnel = _server.WantsTunnel;
             _usb.OnTunnel = _server.AddTunnel;
             _usb.Start();
-            _adb.WantsTunnel = () => _server.WantsTunnel;
+            _adb.WantsTunnel = _server.WantsTunnel;
             _adb.OnTunnel = _server.AddTunnel;
             _adb.Start();
         }
@@ -129,14 +178,15 @@ public sealed class HostCore : IDisposable
         try { _sd?.Unadvertise(); _sd?.Dispose(); } catch { }
         _sd = null;
         _server.Stop();
-        _ = Task.Run(EndAsync);
         Say("Stopped");
     }
 
     public void Dispose()
     {
         Stop();
-        _ff?.Dispose();
+        List<Session> all;
+        lock (_sessions) { all = _sessions.ToList(); _sessions.Clear(); }
+        foreach (var x in all) StopSession(x);
     }
 
     public (long Bytes, int Frames) DrainStats() => (Interlocked.Exchange(ref _bytes, 0), Interlocked.Exchange(ref _frames, 0));
@@ -156,136 +206,156 @@ public sealed class HostCore : IDisposable
         }
     }
 
-    // MARK: Session
+    // MARK: Sessions
 
-    private async Task BeginAsync(HelloInfo h, bool force = false)
+    private Session SessionOf(HostClient c)
+    {
+        lock (_sessions)
+        {
+            if (c.Tag is Session s) return s;
+            s = new Session { Client = c };
+            c.Tag = s;
+            _sessions.Add(s);
+            return s;
+        }
+    }
+
+    private async Task BeginAsync(HostClient client, HelloInfo h, bool force = false)
     {
         await _ctl.WaitAsync();
+        var sess = SessionOf(client);
         try
         {
-            var src = _p.SourceSize;
-            if (!force && _active == h)
+            if (!force && sess.Active && sess.Hello == h && sess.Plat != null)
             {
                 // Client repeated its hello (our welcome was probably lost).
-                SendWelcome(src);
+                SendWelcome(sess, sess.Plat.SourceSize);
                 return;
             }
             // A client that changes its extend flag overrides the host's button (last writer wins).
-            if (!force && _active is { } prev && prev.WantsExtend != h.WantsExtend) _modeOverride = null;
-            if (!force && _active == null && _lastClientExtend != h.WantsExtend) _modeOverride = null;
+            if (!force && sess.Active && sess.Hello.WantsExtend != h.WantsExtend) _modeOverride = null;
+            if (!force && !sess.Active && _lastClientExtend != h.WantsExtend && _sessions.Count(x => x.Active) == 0) _modeOverride = null;
             _lastClientExtend = h.WantsExtend;
-            StopCapture();
+            StopSession(sess);
 
             bool wantExtend = _modeOverride ?? h.WantsExtend;
-            var note = _p.ApplyMode(wantExtend, h.Width, h.Height, out _extended);
-            if (note != null) { Say(note); _server.SendStatus(note, error: false); }
+            var plat = _p.OpenSession(wantExtend, h.Width, h.Height, out var note);
+            sess.Plat = plat;
+            _extended = plat.Extended;
+            if (note != null) { Say(note); _server.SendStatus(client, note, error: false); }
             ModeChanged?.Invoke(_extended);
 
-            _p.PrepareInput();
-            src = _p.SourceSize;
+            var src = plat.SourceSize;
             var (w, hh) = Fit(src.W, src.H, h.Width, h.Height);
             int fps = Math.Clamp((int)h.Fps, 15, 120);
             // Wi-Fi cannot carry more than about 80 Mbps of UDP without loss (each lost packet freezes the picture until the next keyframe).
             int mbps = Math.Max(2, (int)h.BitrateMbps);
-            int cap = _server.ClientIsCable ? 150 : 80;
+            int cap = client.IsCable ? 150 : 80;
             if (mbps > cap) { Say($"Bitrate limited to {cap} Mbps for this connection type."); mbps = cap; }
             int bps = mbps * 1_000_000;
-            _size = (w, hh, fps);
-            _active = h;
-            _gotKey = false;
+            sess.Size = (w, hh, fps);
+            sess.Hello = h;
+            sess.Active = true;
+            sess.GotKey = false;
 
             // Answer right away so the client knows we are alive while encoders are probed and ffmpeg starts.
-            SendWelcome(src);
+            SendWelcome(sess, src);
             Say($"Starting {w}×{hh} @ {fps} fps ({(h.WantsH264 ? "H.264" : "HEVC")})…");
 
-            var candidates = await _p.BuildCandidatesAsync(w, hh, fps, bps, needScale: w != src.W || hh != src.H, h.WantsH264, Say);
+            var candidates = await plat.BuildCandidatesAsync(w, hh, fps, bps, needScale: w != src.W || hh != src.H, h.WantsH264, Say);
             if (candidates.Count == 0)
             {
-                Fail("No usable video encoder found. Install ffmpeg with a hardware (NVIDIA / AMD / Intel) or software " + (h.WantsH264 ? "H.264" : "HEVC") + " encoder.");
+                Fail(sess, "No usable video encoder found. Install ffmpeg with a hardware (NVIDIA / AMD / Intel) or software " + (h.WantsH264 ? "H.264" : "HEVC") + " encoder.");
                 return;
             }
 
             var ff = new FfmpegPipeline();
-            ff.Frame += OnFrame;
-            ff.Dropped += _server.SkipFrame;
+            ff.Frame += (data, key, sets) => OnFrame(sess, data, key, sets);
+            ff.Dropped += () => _server.SkipFrame(client);
             ff.Attempt += name => Say("Starting: " + name);
-            ff.Failed += msg => Fail(msg);
-            StartStatLog();
+            ff.Failed += msg => { if (ReferenceEquals(sess.Ff, ff)) Fail(sess, msg); };
+            EnsureTimers();
+            sess.Ff = ff;
             ff.Start(_p.FfmpegPath, candidates, h.WantsH264);
-            _ff = ff;
 
             if (h.WantsAudio && (_p.Capabilities & WelcomeInfo.CapAudio) != 0)
-                _audio = _p.StartAudio(_server.SendAudio);
-
-            _awake ??= new System.Threading.Timer(_ => _p.KeepAwake(), null, 0, 20_000);
+                sess.Audio = _p.StartAudio(pcm => _server.SendAudio(client, pcm));
         }
         catch (Exception ex)
         {
-            Fail("Failed: " + ex.Message);
+            Fail(sess, "Failed: " + ex.Message);
         }
         finally { _ctl.Release(); }
     }
 
-    private void SendWelcome((int W, int H) src) =>
-        _server.SendWelcome(new WelcomeInfo((ushort)_size.W, (ushort)_size.H, (byte)_size.Fps, _p.Capabilities,
-                                            (ushort)Math.Min(src.W, 65535), (ushort)Math.Min(src.H, 65535), _extended ? (byte)1 : (byte)0));
+    private void SendWelcome(Session s, (int W, int H) src) =>
+        _server.SendWelcome(s.Client, new WelcomeInfo((ushort)s.Size.W, (ushort)s.Size.H, (byte)s.Size.Fps, _p.Capabilities,
+                                                      (ushort)Math.Min(src.W, 65535), (ushort)Math.Min(src.H, 65535), s.Plat is { Extended: true } ? (byte)1 : (byte)0));
 
-    private void Fail(string message)
+    private void Fail(Session s, string message)
     {
         Say(message);
-        _server.SendStatus(message, error: true);
-        StopCapture();
-        _active = null;
+        _server.SendStatus(s.Client, message, error: true);
+        StopSession(s);
+        s.Active = false;
     }
 
-    private async Task EndAsync()
+    private async Task EndAsync(HostClient client)
     {
         await _ctl.WaitAsync();
         try
         {
-            StopCapture();
-            _active = null;
-            _awake?.Dispose(); _awake = null;
-            Say("Waiting for a client (Wi-Fi or cable)…");
+            Session? s;
+            lock (_sessions) { s = client.Tag as Session; if (s != null) _sessions.Remove(s); }
+            client.Tag = null;
+            if (s != null) { s.Active = false; try { s.Plat?.ReleaseInput(); } catch { } StopSession(s); }
+            bool none;
+            lock (_sessions) none = _sessions.Count == 0;
+            if (none)
+            {
+                _awake?.Dispose(); _awake = null;
+                _statLog?.Dispose(); _statLog = null;
+            }
+            if (_server.ClientCount == 0) Say("Waiting for a client (Wi-Fi or cable)…");
         }
         finally { _ctl.Release(); }
     }
 
-    private void StopCapture()
+    /// Stops capture, audio and the platform session (the virtual display itself may stay for the next connection).
+    private void StopSession(Session s)
     {
-        _gotKey = false;
-        try { _audio?.Dispose(); } catch { }
-        _audio = null;
-        try { _p.EndSession(); } catch { }
-        _statLog?.Dispose(); _statLog = null;
-        var ff = _ff;
-        _ff = null;
-        if (ff != null) { ff.Frame -= OnFrame; ff.Dispose(); }
+        s.GotKey = false;
+        try { s.Audio?.Dispose(); } catch { }
+        s.Audio = null;
+        var plat = s.Plat; s.Plat = null;
+        try { plat?.Dispose(); } catch { }
+        var ff = s.Ff; s.Ff = null;
+        if (ff != null) ff.Dispose();
     }
 
-    private System.Threading.Timer? _statLog;
-    private long _logBytes; private int _logFrames; private long _logKeys; private long _logDropPrev;
-
-    private void StartStatLog()
+    private void EnsureTimers()
     {
-        _statLog?.Dispose();
-        _statLog = new System.Threading.Timer(_ =>
+        _awake ??= new System.Threading.Timer(_ => _p.KeepAwake(), null, 0, 20_000);
+        _statLog ??= new System.Threading.Timer(_ =>
         {
             long b = Interlocked.Exchange(ref _logBytes, 0); int f = Interlocked.Exchange(ref _logFrames, 0);
             long drops = _server.DroppedFrames;
-            HostLog.Write($"stats: {f / 5.0:0.0} fps, {b * 8 / 5e6:0.0} Mbps encoded, dropped {drops - _logDropPrev} frames (cable backlog)");
+            HostLog.Write($"stats: {f / 5.0:0.0} fps, {b * 8 / 5e6:0.0} Mbps encoded, dropped {drops - _logDropPrev} frames (cable backlog), {_server.ClientCount} client(s)");
             _logDropPrev = drops;
         }, null, 5000, 5000);
     }
 
-    private void OnFrame(byte[] avcc, bool key, List<byte[]> sets)
+    private System.Threading.Timer? _statLog;
+    private long _logBytes; private int _logFrames; private long _logDropPrev;
+
+    private void OnFrame(Session s, byte[] avcc, bool key, List<byte[]> sets)
     {
         Interlocked.Add(ref _logBytes, avcc.Length); Interlocked.Increment(ref _logFrames);
-        if (!_gotKey)
+        if (!s.GotKey)
         {
             if (!key) return;                    // the client can only start on a keyframe
-            _gotKey = true;
-            Say($"Streaming {_size.W}×{_size.H} @ {_size.Fps} fps");
+            s.GotKey = true;
+            Say($"Streaming {s.Size.W}×{s.Size.H} @ {s.Size.Fps} fps");
         }
 
         byte[] payload;
@@ -293,18 +363,18 @@ public sealed class HostCore : IDisposable
         {
             using var ms = new MemoryStream(avcc.Length + 128);
             ms.WriteByte((byte)sets.Count);
-            foreach (var s in sets)
+            foreach (var set in sets)
             {
-                ms.WriteByte((byte)(s.Length >> 8));
-                ms.WriteByte((byte)s.Length);
-                ms.Write(s, 0, s.Length);
+                ms.WriteByte((byte)(set.Length >> 8));
+                ms.WriteByte((byte)set.Length);
+                ms.Write(set, 0, set.Length);
             }
             ms.Write(avcc, 0, avcc.Length);
             payload = ms.ToArray();
         }
         else payload = avcc;
 
-        _server.SendVideo(payload, key, (uint)Environment.TickCount64);
+        _server.SendVideo(s.Client, payload, key, (uint)Environment.TickCount64);
         Interlocked.Add(ref _bytes, payload.Length);
         Interlocked.Increment(ref _frames);
     }
