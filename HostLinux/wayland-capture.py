@@ -7,6 +7,7 @@ import gi
 from gi.repository import Gio, GLib
 
 port, width, height, fps, kbps, enc = sys.argv[1:7]
+codec = sys.argv[7] if len(sys.argv) > 7 else "h265"      # h265 | h264 (clients without hardware HEVC)
 TOKEN_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "lumen", "portal.token")
 
 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
@@ -95,14 +96,20 @@ enc_el = {
     "va": "vah265enc bitrate=%s key-int-max=%s b-frames=0 target-usage=7" % (kbps, fps),
     "vaapi": "vaapih265enc bitrate=%s keyframe-period=%s max-bframes=0 rate-control=cbr" % (kbps, fps),
     "nvenc": "nvh265enc bitrate=%s gop-size=%s bframes=0 zerolatency=true preset=low-latency-hq rc-mode=cbr" % (kbps, fps),
-}[enc]
+    "x264": "x264enc tune=zerolatency speed-preset=ultrafast bitrate=%s key-int-max=%s bframes=0 byte-stream=true" % (kbps, fps),
+    "h264:va": "vah264enc bitrate=%s key-int-max=%s b-frames=0 target-usage=7" % (kbps, fps),
+    "h264:vaapi": "vaapih264enc bitrate=%s keyframe-period=%s max-bframes=0 rate-control=cbr" % (kbps, fps),
+    "h264:nvenc": "nvh264enc bitrate=%s gop-size=%s bframes=0 zerolatency=true preset=low-latency-hq rc-mode=cbr" % (kbps, fps),
+}[("h264:" + enc) if (codec == "h264" and enc != "x264") else enc]
+parse = ("h264parse config-interval=-1 ! rtph264pay config-interval=-1 pt=96 mtu=1200"
+         if codec == "h264" else "h265parse config-interval=-1 ! rtph265pay config-interval=-1 pt=96 mtu=1200")
 
 pipeline = (
     "pipewiresrc fd=%d path=%s do-timestamp=true ! "
     "queue leaky=downstream max-size-buffers=2 ! videoconvert ! videoscale ! videorate ! "
     "video/x-raw,width=%s,height=%s,framerate=%s/1 ! videoconvert ! %s ! "
-    "h265parse config-interval=-1 ! rtph265pay config-interval=-1 pt=96 mtu=1200 ! "
-    "udpsink host=127.0.0.1 port=%s sync=false" % (fd, node, width, height, fps, enc_el, port))
+    "%s ! "
+    "udpsink host=127.0.0.1 port=%s sync=false" % (fd, node, width, height, fps, enc_el, parse, port))
 log("gst-launch-1.0 " + pipeline)
 os.set_inheritable(fd, True)
 os.execvp("gst-launch-1.0", ["gst-launch-1.0", "-q"] + pipeline.split(" "))

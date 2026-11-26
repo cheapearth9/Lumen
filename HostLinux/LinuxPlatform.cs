@@ -10,7 +10,7 @@ public sealed class LinuxPlatform : IPlatformHost
 {
     private readonly UInputInjector _input = new();
     private bool _inputOpen;
-    private List<LinuxEncoder>? _available;
+    private List<LinuxEncoder>? _available, _available264;
     private (int W, int H)? _size;
 
     public string Display { get; set; } = Environment.GetEnvironmentVariable("DISPLAY") is { Length: > 0 } d ? d : ":0";
@@ -105,9 +105,10 @@ public sealed class LinuxPlatform : IPlatformHost
 
     // MARK: encoders
 
-    private static string CodecName(LinuxEncoder k) => k switch
+    private static string CodecName(LinuxEncoder k, bool h264) => (k, h264) switch
     {
-        LinuxEncoder.Vaapi => "hevc_vaapi", LinuxEncoder.Nvenc => "hevc_nvenc", _ => "libx265"
+        (LinuxEncoder.Vaapi, false) => "hevc_vaapi", (LinuxEncoder.Nvenc, false) => "hevc_nvenc", (_, false) => "libx265",
+        (LinuxEncoder.Vaapi, true) => "h264_vaapi", (LinuxEncoder.Nvenc, true) => "h264_nvenc", _ => "libx264"
     };
 
     private List<string> Pre(LinuxEncoder k) =>
@@ -124,10 +125,23 @@ public sealed class LinuxPlatform : IPlatformHost
         };
     }
 
-    private static List<string> Codec(LinuxEncoder k, int fps, int bps)
+    private static List<string> Codec(LinuxEncoder k, int fps, int bps, bool h264 = false)
     {
         string rate = bps.ToString(), buf = Math.Max(bps / 10, 100_000).ToString();
         var c = new List<string> { "-b:v", rate, "-maxrate", rate, "-bufsize", buf, "-g", Math.Max(fps / 2, 8).ToString() };
+        if (h264)
+        {
+            int gop = Math.Max(fps / 2, 8);
+            List<string> h = k switch
+            {
+                LinuxEncoder.Vaapi => new() { "-c:v", "h264_vaapi", "-bf", "0", "-async_depth", "1", "-profile:v", "high" },
+                LinuxEncoder.Nvenc => new() { "-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ull", "-rc", "cbr", "-zerolatency", "1", "-bf", "0", "-forced-idr", "1", "-profile:v", "high" },
+                _ => new() { "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-profile:v", "high",
+                             "-x264-params", $"keyint={gop}:min-keyint={gop}:bframes=0:rc-lookahead=0:scenecut=0:repeat-headers=1" }
+            };
+            h.AddRange(c);
+            return h;
+        }
         List<string> s = k switch
         {
             LinuxEncoder.Vaapi => new() { "-c:v", "hevc_vaapi", "-bf", "0", "-async_depth", "1" },
@@ -139,35 +153,36 @@ public sealed class LinuxPlatform : IPlatformHost
         return s;
     }
 
-    private async Task<List<LinuxEncoder>> DetectAsync(string exe, Action<string> status)
+    private async Task<List<LinuxEncoder>> DetectAsync(string exe, bool h264, Action<string> status)
     {
-        if (_available != null) return _available;
+        if ((h264 ? _available264 : _available) is { } cached) return cached;
         status("Detecting video encoders…");
         var compiled = await FfmpegUtil.ListEncodersAsync(exe);
         var result = new List<LinuxEncoder>();
         foreach (var k in new[] { LinuxEncoder.Nvenc, LinuxEncoder.Vaapi })
         {
-            if (!compiled.Contains(CodecName(k))) continue;
+            if (!compiled.Contains(CodecName(k, h264))) continue;
             var a = new List<string> { "-hide_banner", "-loglevel", "error", "-nostdin" };
             a.AddRange(Pre(k));
             a.AddRange(new[] { "-f", "lavfi", "-i", "color=c=black:s=640x360:r=30", "-vf", Filter(k, 640, 360, false), "-frames:v", "10" });
-            a.AddRange(Codec(k, 30, 4_000_000));
+            a.AddRange(Codec(k, 30, 4_000_000, h264));
             a.AddRange(new[] { "-f", "null", "-" });
             if (await FfmpegUtil.TestEncodeAsync(exe, a)) result.Add(k);
         }
-        if (compiled.Contains("libx265")) result.Add(LinuxEncoder.Software);
+        if (compiled.Contains(h264 ? "libx264" : "libx265")) result.Add(LinuxEncoder.Software);
         HostLog.Write("available encoders: " + (result.Count == 0 ? "none" : string.Join(", ", result)));
-        return _available = result;
+        if (h264) _available264 = result; else _available = result;
+        return result;
     }
 
-    private List<string> BuildArgs(LinuxEncoder k, int fps, int w, int h, bool scale, int bps, int port)
+    private List<string> BuildArgs(LinuxEncoder k, int fps, int w, int h, bool scale, int bps, int port, bool h264)
     {
         var (sw, sh) = SourceSize;
         var a = new List<string> { "-hide_banner", "-loglevel", "warning", "-nostdin" };
         a.AddRange(Pre(k));
         a.AddRange(new[] { "-f", "x11grab", "-framerate", fps.ToString(), "-draw_mouse", "1", "-video_size", $"{sw}x{sh}", "-i", (Display.Contains('.') ? Display : Display + ".0") + $"+{_origin.X},{_origin.Y}" });
         a.AddRange(new[] { "-vf", Filter(k, w, h, scale), "-an" });
-        a.AddRange(Codec(k, fps, bps));
+        a.AddRange(Codec(k, fps, bps, h264));
         a.AddRange(new[] { "-bsf:v", "dump_extra=freq=keyframe" });
         a.AddRange(FfmpegUtil.OutputArgs(port));
         return a;
@@ -216,7 +231,7 @@ public sealed class LinuxPlatform : IPlatformHost
         return path;
     }
 
-    private List<CaptureCandidate> BuildWaylandCandidates(int w, int h, int fps, int bps, Action<string> status)
+    private List<CaptureCandidate> BuildWaylandCandidates(int w, int h, int fps, int bps, bool h264, Action<string> status)
     {
         var problems = WaylandProblems();
         if (problems.Count > 0)
@@ -230,28 +245,28 @@ public sealed class LinuxPlatform : IPlatformHost
         var encs = new List<(string Id, string Label)>();
         if (Encoder != LinuxEncoder.Software)
         {
-            if (Encoder is LinuxEncoder.Auto or LinuxEncoder.Nvenc && HasGst("nvh265enc")) encs.Add(("nvenc", "NVIDIA NVENC"));
+            if (Encoder is LinuxEncoder.Auto or LinuxEncoder.Nvenc && HasGst(h264 ? "nvh264enc" : "nvh265enc")) encs.Add(("nvenc", "NVIDIA NVENC"));
             if (Encoder is LinuxEncoder.Auto or LinuxEncoder.Vaapi)
             {
-                if (HasGst("vah265enc")) encs.Add(("va", "VA-API"));
-                else if (HasGst("vaapih265enc")) encs.Add(("vaapi", "VA-API"));
+                if (HasGst(h264 ? "vah264enc" : "vah265enc")) encs.Add(("va", "VA-API"));
+                else if (HasGst(h264 ? "vaapih264enc" : "vaapih265enc")) encs.Add(("vaapi", "VA-API"));
             }
         }
-        if (HasGst("x265enc")) encs.Add(("x265", "CPU (x265)"));
+        if (HasGst(h264 ? "x264enc" : "x265enc")) encs.Add((h264 ? "x264" : "x265", "CPU"));
         int kbps = bps / 1000;
         return encs.Select(e => new CaptureCandidate
         {
             Name = e.Label + " + Wayland screen share",
             Exe = "python3",
             NoFrameSeconds = 90,
-            Args = port => new List<string> { script, port.ToString(), w.ToString(), h.ToString(), fps.ToString(), kbps.ToString(), e.Id }
+            Args = port => new List<string> { script, port.ToString(), w.ToString(), h.ToString(), fps.ToString(), kbps.ToString(), e.Id, h264 ? "h264" : "h265" }
         }).ToList();
     }
 
-    public async Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bps, bool needScale, Action<string> status)
+    public async Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bps, bool needScale, bool h264, Action<string> status)
     {
-        if (IsWayland) return BuildWaylandCandidates(w, h, fps, bps, status);
-        var available = await DetectAsync(FfmpegPath, status);
+        if (IsWayland) return BuildWaylandCandidates(w, h, fps, bps, h264, status);
+        var available = await DetectAsync(FfmpegPath, h264, status);
         var kinds = new List<LinuxEncoder>();
         if (Encoder == LinuxEncoder.Auto) kinds.AddRange(available);
         else
@@ -261,8 +276,8 @@ public sealed class LinuxPlatform : IPlatformHost
         }
         return kinds.Select(k => new CaptureCandidate
         {
-            Name = k switch { LinuxEncoder.Vaapi => "VAAPI (Intel/AMD GPU)", LinuxEncoder.Nvenc => "NVIDIA NVENC", _ => "CPU (x265)" } + " + X11 capture",
-            Args = port => BuildArgs(k, fps, w, h, needScale, bps, port)
+            Name = k switch { LinuxEncoder.Vaapi => "VAAPI (Intel/AMD GPU)", LinuxEncoder.Nvenc => "NVIDIA NVENC", _ => "CPU" } + (h264 ? " H.264" : "") + " + X11 capture",
+            Args = port => BuildArgs(k, fps, w, h, needScale, bps, port, h264)
         }).ToList();
     }
 
@@ -287,7 +302,7 @@ public sealed class LinuxPlatform : IPlatformHost
         if (uinput) { try { using var f = File.Open("/dev/uinput", FileMode.Open, FileAccess.Write); writable = true; } catch { } }
         Line(writable, writable ? "/dev/uinput is writable (mouse, keyboard and touch input work)"
             : "/dev/uinput is not writable: run 'sudo modprobe uinput' and add yourself to the 'input' group (the package does this), then log in again");
-        var encoders = await DetectAsync(FfmpegPath, s => { });
+        var encoders = await DetectAsync(FfmpegPath, false, s => { });
         Line(encoders.Count > 0, "encoders: " + (encoders.Count == 0 ? "none (install ffmpeg with libx265, or VAAPI/NVENC drivers)" : string.Join(", ", encoders)));
         return problems == 0 ? 0 : 1;
     }

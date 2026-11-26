@@ -1,4 +1,5 @@
 import Foundation
+import VideoToolbox
 
 /// User preferences shared by the SwiftUI connect screen (via @AppStorage with the same keys) and UIKit code.
 enum LumenSettings {
@@ -28,6 +29,8 @@ enum LumenSettings {
         var f: UInt8 = 0
         if audioOn { f |= HelloInfo.flagAudio }
         if extend { f |= HelloInfo.flagExtend }
+        // Automatic: H.264 only when this chip cannot decode HEVC in hardware.
+        if !VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) { f |= HelloInfo.flagH264 }
         return f
     }
 }

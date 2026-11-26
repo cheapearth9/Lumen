@@ -17,16 +17,19 @@ final class HEVCEncoder {
     private var session: VTCompressionSession?
     private let lock = NSLock()
     private var forceKey = true
+    /// H.264 for clients without hardware HEVC decoding (the stream then carries SPS + PPS instead of VPS + SPS + PPS).
+    private var h264 = false
 
-    func configure(width: Int, height: Int, fps: Int, bitrate: Int) throws {
+    func configure(width: Int, height: Int, fps: Int, bitrate: Int, h264: Bool = false) throws {
         invalidate()
+        self.h264 = h264
         let spec: [CFString: Any] = [
             kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true
         ]
         var s: VTCompressionSession?
         let st = VTCompressionSessionCreate(allocator: nil,
                                             width: Int32(width), height: Int32(height),
-                                            codecType: kCMVideoCodecType_HEVC,
+                                            codecType: h264 ? kCMVideoCodecType_H264 : kCMVideoCodecType_HEVC,
                                             encoderSpecification: spec as CFDictionary,
                                             imageBufferAttributes: nil,
                                             compressedDataAllocator: nil,
@@ -36,7 +39,7 @@ final class HEVCEncoder {
 
         func set(_ key: CFString, _ value: CFTypeRef) { VTSessionSetProperty(s, key: key, value: value) }
         set(kVTCompressionPropertyKey_RealTime, kCFBooleanTrue)
-        set(kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main_AutoLevel)
+        set(kVTCompressionPropertyKey_ProfileLevel, h264 ? kVTProfileLevel_H264_High_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel)
         set(kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse)
         set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue)
         set(kVTCompressionPropertyKey_MaxFrameDelayCount, NSNumber(value: 0))
@@ -96,17 +99,23 @@ final class HEVCEncoder {
 
         var sets = [Data]()
         if isKey, let fd = CMSampleBufferGetFormatDescription(sb) {
+            func paramSet(_ index: Int, _ ptr: UnsafeMutablePointer<UnsafePointer<UInt8>?>?, _ size: UnsafeMutablePointer<Int>?,
+                          _ count: UnsafeMutablePointer<Int>?) -> OSStatus {
+                if h264 {
+                    return CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fd, parameterSetIndex: index, parameterSetPointerOut: ptr,
+                                                                              parameterSetSizeOut: size, parameterSetCountOut: count,
+                                                                              nalUnitHeaderLengthOut: nil)
+                }
+                return CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(fd, parameterSetIndex: index, parameterSetPointerOut: ptr,
+                                                                          parameterSetSizeOut: size, parameterSetCountOut: count,
+                                                                          nalUnitHeaderLengthOut: nil)
+            }
             var count = 0
-            CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(fd, parameterSetIndex: 0,
-                                                              parameterSetPointerOut: nil, parameterSetSizeOut: nil,
-                                                              parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
+            _ = paramSet(0, nil, nil, &count)
             for i in 0..<count {
                 var ptr: UnsafePointer<UInt8>?
                 var size = 0
-                let r = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(fd, parameterSetIndex: i,
-                                                                          parameterSetPointerOut: &ptr, parameterSetSizeOut: &size,
-                                                                          parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil)
-                if r == noErr, let ptr { sets.append(Data(bytes: ptr, count: size)) }
+                if paramSet(i, &ptr, &size, nil) == noErr, let ptr { sets.append(Data(bytes: ptr, count: size)) }
             }
         }
 

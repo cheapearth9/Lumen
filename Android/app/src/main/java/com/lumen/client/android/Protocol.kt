@@ -193,6 +193,7 @@ class HelloInfo(var width: Int, var height: Int, var fps: Int, var bitrateMbps: 
     companion object {
         const val FLAG_AUDIO = 1
         const val FLAG_EXTEND = 2
+        const val FLAG_H264 = 4
     }
 
     val wantsAudio: Boolean get() = (flags and FLAG_AUDIO) != 0

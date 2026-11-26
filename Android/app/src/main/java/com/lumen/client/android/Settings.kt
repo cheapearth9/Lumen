@@ -97,6 +97,7 @@ object Prefs {
         var flags = 0
         if (audioOn) flags = flags or HelloInfo.FLAG_AUDIO
         if (extend) flags = flags or HelloInfo.FLAG_EXTEND
+        if (!VideoDecoder.hasHevcDecoder()) flags = flags or HelloInfo.FLAG_H264
         return HelloInfo(w, h, minOf(255, maxOf(1, fps)), minOf(80, maxOf(8, mbpsWifi)), flags)
     }
 

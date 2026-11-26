@@ -166,10 +166,11 @@ public sealed class FfmpegPipeline : IDisposable
     private System.Threading.Timer? _noFrame;
     private readonly Queue<string> _tail = new();
     private byte[]? _vps, _sps, _pps;
+    private bool _h264;
 
-    public void Start(string exe, IReadOnlyList<CaptureCandidate> candidates)
+    public void Start(string exe, IReadOnlyList<CaptureCandidate> candidates, bool h264 = false)
     {
-        lock (_sync) { _exe = exe; _cands = candidates.ToList(); _index = 0; _stopped = false; }
+        lock (_sync) { _exe = exe; _cands = candidates.ToList(); _index = 0; _stopped = false; _h264 = h264; _vps = _sps = _pps = null; }
         Launch();
     }
 
@@ -323,6 +324,9 @@ public sealed class FfmpegPipeline : IDisposable
             if (off + 3 > n) { damaged = true; }
             else
             {
+                if (_h264) DepacketizeH264(buf, off, n, nals, ref fu, ref damaged);
+                else
+                {
                 int type = (buf[off] >> 1) & 0x3F;
                 if (type == 48)                                           // aggregation packet
                 {
@@ -358,6 +362,7 @@ public sealed class FfmpegPipeline : IDisposable
                 {
                     nals.Add(buf.AsSpan(off, n - off).ToArray());         // single NAL unit packet
                 }
+                }
             }
 
             if (marker)                                                   // last packet of the access unit
@@ -371,8 +376,75 @@ public sealed class FfmpegPipeline : IDisposable
         }
     }
 
+    /// RFC 6184: single NAL (1-23), STAP-A (24), FU-A (28).
+    private static void DepacketizeH264(byte[] buf, int off, int n, List<byte[]> nals, ref MemoryStream? fu, ref bool damaged)
+    {
+        int type = buf[off] & 0x1F;
+        if (type == 24)
+        {
+            int p = off + 1;
+            while (p + 2 <= n)
+            {
+                int size = (buf[p] << 8) | buf[p + 1];
+                p += 2;
+                if (size <= 0 || p + size > n) { damaged = true; break; }
+                nals.Add(buf.AsSpan(p, size).ToArray());
+                p += size;
+            }
+        }
+        else if (type == 28)
+        {
+            if (off + 2 > n) { damaged = true; return; }
+            byte fuh = buf[off + 1];
+            bool start = (fuh & 0x80) != 0, end = (fuh & 0x40) != 0;
+            if (start)
+            {
+                fu = new MemoryStream();
+                fu.WriteByte((byte)((buf[off] & 0xE0) | (fuh & 0x1F)));        // rebuild the NAL header
+            }
+            if (fu == null) damaged = true;
+            else
+            {
+                fu.Write(buf, off + 2, n - off - 2);
+                if (end) { nals.Add(fu.ToArray()); fu = null; }
+            }
+        }
+        else nals.Add(buf.AsSpan(off, n - off).ToArray());
+    }
+
+    private bool EmitH264(List<byte[]> nals, int gen)
+    {
+        var avcc = new MemoryStream();
+        bool key = false;
+        Span<byte> len = stackalloc byte[4];
+        foreach (var nal in nals)
+        {
+            if (nal.Length < 2) continue;
+            int t = nal[0] & 0x1F;
+            switch (t)
+            {
+                case 7: _sps = nal; continue;
+                case 8: _pps = nal; continue;
+                case 9: continue;                                         // access unit delimiter
+            }
+            if (t == 5) key = true;                                       // IDR picture
+            BinaryPrimitives.WriteUInt32BigEndian(len, (uint)nal.Length);
+            avcc.Write(len);
+            avcc.Write(nal, 0, nal.Length);
+        }
+        if (avcc.Length == 0) return false;
+        var sets = new List<byte[]>();
+        if (key)
+        {
+            if (_sps == null || _pps == null) { Dropped?.Invoke(); return false; }
+            sets.Add(_sps); sets.Add(_pps);                               // two sets = H.264 (HEVC sends three)
+        }
+        return Deliver(avcc.ToArray(), key, sets, gen);
+    }
+
     private bool Emit(List<byte[]> nals, int gen)
     {
+        if (_h264) return EmitH264(nals, gen);
         var avcc = new MemoryStream();
         bool key = false;
         Span<byte> len = stackalloc byte[4];
@@ -401,6 +473,11 @@ public sealed class FfmpegPipeline : IDisposable
             sets.Add(_vps); sets.Add(_sps); sets.Add(_pps);
         }
 
+        return Deliver(avcc.ToArray(), key, sets, gen);
+    }
+
+    private bool Deliver(byte[] avcc, bool key, List<byte[]> sets, int gen)
+    {
         lock (_sync)
         {
             if (_stopped || gen != _gen) return false;
@@ -420,7 +497,7 @@ public sealed class FfmpegPipeline : IDisposable
                 }, null, 1000, 1000);
             }
         }
-        Frame?.Invoke(avcc.ToArray(), key, sets);
+        Frame?.Invoke(avcc, key, sets);
         return true;
     }
 }

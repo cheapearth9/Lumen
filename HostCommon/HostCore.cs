@@ -18,7 +18,8 @@ public interface IPlatformHost
     /// Keep the machine from sleeping (called every 20 s while streaming).
     void KeepAwake();
     /// Ordered list of capture+encode pipelines to try for this session.
-    Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bitrateBps, bool needScale, Action<string> status);
+    /// h264 = the client cannot decode HEVC in hardware, so produce an H.264 stream (RTP, RFC 6184) instead of H.265.
+    Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bitrateBps, bool needScale, bool h264, Action<string> status);
 
     /// Start capturing system audio; deliver 960-byte packets (240 frames, 48 kHz stereo s16le). Null if unsupported.
     IDisposable? StartAudio(Action<byte[]> packet) => null;
@@ -187,12 +188,12 @@ public sealed class HostCore : IDisposable
 
             // Answer right away so the client knows we are alive while encoders are probed and ffmpeg starts.
             SendWelcome(src);
-            Say($"Starting {w}×{hh} @ {fps} fps…");
+            Say($"Starting {w}×{hh} @ {fps} fps ({(h.WantsH264 ? "H.264" : "HEVC")})…");
 
-            var candidates = await _p.BuildCandidatesAsync(w, hh, fps, bps, needScale: w != src.W || hh != src.H, Say);
+            var candidates = await _p.BuildCandidatesAsync(w, hh, fps, bps, needScale: w != src.W || hh != src.H, h.WantsH264, Say);
             if (candidates.Count == 0)
             {
-                Fail("No usable video encoder found. Install ffmpeg with a hardware (NVIDIA / AMD / Intel) or software HEVC encoder.");
+                Fail("No usable video encoder found. Install ffmpeg with a hardware (NVIDIA / AMD / Intel) or software " + (h.WantsH264 ? "H.264" : "HEVC") + " encoder.");
                 return;
             }
 
@@ -202,7 +203,7 @@ public sealed class HostCore : IDisposable
             ff.Attempt += name => Say("Starting: " + name);
             ff.Failed += msg => Fail(msg);
             StartStatLog();
-            ff.Start(_p.FfmpegPath, candidates);
+            ff.Start(_p.FfmpegPath, candidates, h.WantsH264);
             _ff = ff;
 
             if (h.WantsAudio && (_p.Capabilities & WelcomeInfo.CapAudio) != 0)

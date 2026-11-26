@@ -11,7 +11,7 @@ public sealed class WindowsPlatform : IPlatformHost
     [DllImport("kernel32.dll")] private static extern uint SetThreadExecutionState(uint flags);
 
     private readonly InputInjector _input = new();
-    private List<EncoderKind>? _available;
+    private List<EncoderKind>? _available, _available264;
 
     public int ScreenIndex { get; set; }
     public EncoderKind Encoder { get; set; } = EncoderKind.Auto;
@@ -109,23 +109,24 @@ public sealed class WindowsPlatform : IPlatformHost
         EncoderKind.Nvenc => "NVIDIA NVENC",
         EncoderKind.Amf => "AMD AMF",
         EncoderKind.Qsv => "Intel Quick Sync",
-        EncoderKind.Software => "CPU (software x265)",
+        EncoderKind.Software => "CPU (software)",
         _ => "Auto-detect"
     };
 
-    private static string CodecName(EncoderKind k) => k switch
+    private static string CodecName(EncoderKind k, bool h264) => (k, h264) switch
     {
-        EncoderKind.Nvenc => "hevc_nvenc", EncoderKind.Amf => "hevc_amf", EncoderKind.Qsv => "hevc_qsv", _ => "libx265"
+        (EncoderKind.Nvenc, false) => "hevc_nvenc", (EncoderKind.Amf, false) => "hevc_amf", (EncoderKind.Qsv, false) => "hevc_qsv", (_, false) => "libx265",
+        (EncoderKind.Nvenc, true) => "h264_nvenc", (EncoderKind.Amf, true) => "h264_amf", (EncoderKind.Qsv, true) => "h264_qsv", _ => "libx264"
     };
 
     // MARK: Encoder detection
 
-    private async Task<List<EncoderKind>> DetectAsync(string exe, Action<string> status)
+    private async Task<List<EncoderKind>> DetectAsync(string exe, bool h264, Action<string> status)
     {
-        if (_available != null) return _available;
-        status("Detecting video encoders…");
+        if ((h264 ? _available264 : _available) is { } cached) return cached;
+        status(h264 ? "Detecting H.264 encoders…" : "Detecting video encoders…");
         var compiled = await FfmpegUtil.ListEncodersAsync(exe);
-        var kinds = new[] { EncoderKind.Nvenc, EncoderKind.Amf, EncoderKind.Qsv }.Where(k => compiled.Contains(CodecName(k))).ToList();
+        var kinds = new[] { EncoderKind.Nvenc, EncoderKind.Amf, EncoderKind.Qsv }.Where(k => compiled.Contains(CodecName(k, h264))).ToList();
 
         var tests = kinds.Select(async k =>
         {
@@ -133,16 +134,17 @@ public sealed class WindowsPlatform : IPlatformHost
             a.AddRange(PreInput(k));
             a.AddRange(new[] { "-f", "lavfi", "-i", "color=c=black:s=640x360:r=30", "-vf", PostFilter(k, 640, 360, false) });
             a.AddRange(new[] { "-frames:v", "10" });
-            a.AddRange(Codec(k, 30, 4_000_000));
+            a.AddRange(Codec(k, 30, 4_000_000, h264));
             a.AddRange(new[] { "-f", "null", "-" });
             return (k, ok: await FfmpegUtil.TestEncodeAsync(exe, a));
         }).ToList();
         var result = new List<EncoderKind>();
         foreach (var t in tests) { var (k, ok) = await t; if (ok) result.Add(k); }
-        if (compiled.Contains("libx265")) result.Add(EncoderKind.Software);
+        if (compiled.Contains(h264 ? "libx264" : "libx265")) result.Add(EncoderKind.Software);
 
-        HostLog.Write("available encoders: " + (result.Count == 0 ? "none" : string.Join(", ", result)));
-        return _available = result;
+        HostLog.Write((h264 ? "available H.264 encoders: " : "available encoders: ") + (result.Count == 0 ? "none" : string.Join(", ", result)));
+        if (h264) _available264 = result; else _available = result;
+        return result;
     }
 
     // MARK: ffmpeg argument building
@@ -162,10 +164,24 @@ public sealed class WindowsPlatform : IPlatformHost
     }
 
     /// Low-latency settings: no B-frames, no look-ahead, CBR, a keyframe every second.
-    private static List<string> Codec(EncoderKind k, int fps, int bps)
+    private static List<string> Codec(EncoderKind k, int fps, int bps, bool h264 = false)
     {
         string rate = bps.ToString(), buf = Math.Max(bps / 10, 100_000).ToString();
         var common = new List<string> { "-b:v", rate, "-maxrate", rate, "-bufsize", buf, "-g", Math.Max(fps / 2, 8).ToString() };
+        if (h264)
+        {
+            int gop = Math.Max(fps / 2, 8);
+            List<string> h = k switch
+            {
+                EncoderKind.Nvenc => new() { "-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ull", "-rc", "cbr", "-zerolatency", "1", "-bf", "0", "-forced-idr", "1", "-profile:v", "high" },
+                EncoderKind.Amf => new() { "-c:v", "h264_amf", "-usage", "ultralowlatency", "-quality", "speed", "-rc", "cbr", "-profile:v", "high" },
+                EncoderKind.Qsv => new() { "-c:v", "h264_qsv", "-preset", "veryfast", "-async_depth", "1", "-bf", "0", "-profile:v", "high" },
+                _ => new() { "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-profile:v", "high",
+                             "-x264-params", $"keyint={gop}:min-keyint={gop}:bframes=0:rc-lookahead=0:scenecut=0:repeat-headers=1" }
+            };
+            h.AddRange(common);
+            return h;
+        }
         List<string> specific = k switch
         {
             EncoderKind.Nvenc => new() { "-c:v", "hevc_nvenc", "-preset", "p1", "-tune", "ull", "-rc", "cbr", "-zerolatency", "1", "-bf", "0", "-forced-idr", "1" },
@@ -178,7 +194,7 @@ public sealed class WindowsPlatform : IPlatformHost
         return specific;
     }
 
-    private List<string> BuildArgs(EncoderKind k, Grab grab, int adapter, int output, Rectangle bounds, int fps, int w, int h, bool scale, int bps, int port)
+    private List<string> BuildArgs(EncoderKind k, Grab grab, int adapter, int output, Rectangle bounds, int fps, int w, int h, bool scale, int bps, int port, bool h264)
     {
         var a = new List<string> { "-hide_banner", "-loglevel", "warning", "-nostdin" };
         a.AddRange(PreInput(k));
@@ -210,7 +226,7 @@ public sealed class WindowsPlatform : IPlatformHost
         }
 
         a.Add("-an");
-        a.AddRange(Codec(k, fps, bps));
+        a.AddRange(Codec(k, fps, bps, h264));
         if (grab != Grab.DdaPlain)
         {
             a.Add("-bsf:v"); a.Add("dump_extra=freq=keyframe");               // VPS/SPS/PPS in-band with every keyframe
@@ -224,13 +240,13 @@ public sealed class WindowsPlatform : IPlatformHost
         return a;
     }
 
-    public async Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bps, bool needScale, Action<string> status)
+    public async Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bps, bool needScale, bool h264, Action<string> status)
     {
         var exe = FfmpegPath;
         var screen = CurrentScreen();
         var (adapter, output) = Dxgi.Find(screen.DeviceName) ?? (0, Math.Max(0, Array.IndexOf(Screen.AllScreens, screen)));
 
-        var available = await DetectAsync(exe, status);
+        var available = await DetectAsync(exe, h264, status);
         var kinds = new List<EncoderKind>();
         if (Encoder == EncoderKind.Auto) kinds.AddRange(available);
         else
@@ -255,8 +271,8 @@ public sealed class WindowsPlatform : IPlatformHost
                 var g = grab;
                 list.Add(new CaptureCandidate
                 {
-                    Name = $"{Label(kind)} + {label}",
-                    Args = port => BuildArgs(kind, g, adapter, output, bounds, fps, w, h, needScale, bps, port)
+                    Name = $"{Label(kind)}{(h264 ? " H.264" : "")} + {label}",
+                    Args = port => BuildArgs(kind, g, adapter, output, bounds, fps, w, h, needScale, bps, port, h264)
                 });
             }
         }

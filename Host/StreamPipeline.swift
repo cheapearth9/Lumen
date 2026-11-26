@@ -128,7 +128,7 @@ final class StreamPipeline: @unchecked Sendable {
                 onMode?(extended)
                 let s = Self.fit(displayID: activeDisplayID, maxW: Int(h.width), maxH: Int(h.height))
                 let fps = max(15, min(Int(h.fps), 120))
-                try encoder.configure(width: s.w, height: s.h, fps: fps, bitrate: max(2, Int(h.bitrateMbps)) * 1_000_000)
+                try encoder.configure(width: s.w, height: s.h, fps: fps, bitrate: max(2, Int(h.bitrateMbps)) * 1_000_000, h264: h.wantsH264)
                 injector.configure(displayID: activeDisplayID)
                 try await capture.start(displayID: activeDisplayID, width: s.w, height: s.h, fps: fps, audio: h.wantsAudio)
                 ctl.async {

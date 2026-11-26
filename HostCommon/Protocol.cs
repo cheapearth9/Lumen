@@ -80,9 +80,11 @@ public readonly record struct HelloInfo(ushort Width, ushort Height, byte Fps, u
 {
     public const byte FlagAudio = 1;       // client wants audio
     public const byte FlagExtend = 2;      // client wants an extended desktop (virtual display) instead of a mirror
+    public const byte FlagH264 = 4;        // client has no hardware HEVC decoder (iPhone 5s/6, iPad Air 1/2 ...): send H.264 instead
 
     public bool WantsAudio => (Flags & FlagAudio) != 0;
     public bool WantsExtend => (Flags & FlagExtend) != 0;
+    public bool WantsH264 => (Flags & FlagH264) != 0;
 
     public static bool TryDecode(ReadOnlySpan<byte> d, out HelloInfo info)
     {

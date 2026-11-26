@@ -19,7 +19,15 @@ class VideoDecoder {
         const val NOT_RUNNING = 1
         const val DROPPED = 2
         private const val MAX_INPUT = 2 * 1024 * 1024
-        private const val MIME = "video/hevc"
+        private const val HEVC = "video/hevc"
+        private const val AVC = "video/avc"
+
+        /** True when this device has an HEVC decoder; otherwise the host is asked for H.264. */
+        fun hasHevcDecoder(): Boolean = try {
+            android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+                !info.isEncoder && info.supportedTypes.any { it.equals(HEVC, ignoreCase = true) }
+            }
+        } catch (e: Exception) { true }
         private val START_CODE = byteArrayOf(0, 0, 0, 1)
     }
 
@@ -30,6 +38,8 @@ class VideoDecoder {
     var onError: ((String) -> Unit)? = null
 
     private val lock = Any()
+    /** Two parameter sets (SPS, PPS) mean the host sends H.264; three (VPS, SPS, PPS) mean HEVC. */
+    private val MIME: String get() = if (sets.size == 2) AVC else HEVC
     private var surface: Surface? = null
     private var sets: List<ByteArray> = emptyList()
     private var csd: ByteArray = EMPTY_BYTES
@@ -147,7 +157,7 @@ class VideoDecoder {
                 try { c?.release() } catch (e2: Exception) { }
             }
         }
-        onError?.invoke("This device cannot decode the HEVC video stream (" + (lastError?.message ?: "decoder error") + ")")
+        onError?.invoke("This device cannot decode the video stream (" + (lastError?.message ?: "decoder error") + ")")
         return false
     }
 
