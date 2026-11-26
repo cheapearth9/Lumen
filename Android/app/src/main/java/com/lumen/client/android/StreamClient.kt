@@ -9,6 +9,10 @@ import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.io.OutputStream
+import java.io.InputStream
 import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
@@ -95,6 +99,14 @@ class StreamClient(private val app: Context) {
 
     @Volatile private var socket: DatagramSocket? = null
     @Volatile private var remote: InetAddress? = null
+
+    // USB cable (adb forward) transport: one TCP connection, packets framed with a u32 big-endian length.
+    @Volatile private var tcp: Socket? = null
+    private var tcpOut: OutputStream? = null
+    private val tcpLock = Any()
+    private var isCable = false
+    private var suppressCableUntil = 0L
+    private var cableServer: ServerSocket? = null
     private var epoch = 0
     private var timer: ScheduledFuture<*>? = null
 
@@ -245,6 +257,8 @@ class StreamClient(private val app: Context) {
     fun disconnect() {
         exec.execute {
             send(PacketType.BYE, 0, EMPTY_BYTES)
+            // The host re-offers the cable every couple of seconds: stay put after the user chose to leave.
+            if (isCable) suppressCableUntil = now() + 30_000
             teardown(true)
         }
     }
@@ -291,10 +305,83 @@ class StreamClient(private val app: Context) {
 
     // MARK: Session lifecycle (exec thread)
 
-    private fun begin(t: Target) {
+    // MARK: USB cable (exec thread unless noted)
+
+    init { startCableListener() }
+
+    private fun startCableListener() {
+        val t = Thread({
+            while (true) {
+                var server: ServerSocket? = null
+                try {
+                    server = ServerSocket()
+                    server.reuseAddress = true
+                    server.bind(java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), LUMEN_CABLE_PORT), 2)
+                    cableServer = server
+                    while (true) {
+                        val c = server.accept()
+                        exec.execute { cableAccepted(c) }
+                    }
+                } catch (e: Exception) {
+                    try { server?.close() } catch (e2: Exception) { }
+                }
+                try { Thread.sleep(2000) } catch (e: InterruptedException) { return@Thread }
+            }
+        }, "lumen-cable-listen")
+        t.isDaemon = true
+        t.start()
+    }
+
+    /** The host connected through `adb forward`. Auto-connect only when idle (and not right after the user disconnected). */
+    private fun cableAccepted(c: Socket) {
+        val busy = state == State.CONNECTING || state == State.STREAMING
+        if (busy || now() < suppressCableUntil) {
+            try { c.close() } catch (e: Exception) { }
+            return
+        }
+        try {
+            c.tcpNoDelay = true
+            begin(Target("USB cable", "", "usb-cable"), c)
+        } catch (e: Exception) {
+            try { c.close() } catch (e2: Exception) { }
+        }
+    }
+
+    private fun tcpReceiveLoop(c: Socket, myEpoch: Int) {
+        try {
+            val input: InputStream = c.getInputStream()
+            val head = ByteArray(4)
+            while (!c.isClosed) {
+                readFully(input, head, 4)
+                val len = ((head[0].toInt() and 0xFF) shl 24) or ((head[1].toInt() and 0xFF) shl 16) or
+                    ((head[2].toInt() and 0xFF) shl 8) or (head[3].toInt() and 0xFF)
+                if (len < 0 || len > 64 * 1024 * 1024) break
+                val data = ByteArray(len)
+                readFully(input, data, len)
+                exec.execute { if (epoch == myEpoch) process(data) }
+            }
+        } catch (e: Exception) {
+        }
+        exec.execute {
+            if (epoch == myEpoch && tcp === c) fail("The USB cable connection was closed")
+        }
+    }
+
+    private fun readFully(input: InputStream, buf: ByteArray, n: Int) {
+        var got = 0
+        while (got < n) {
+            val r = input.read(buf, got, n - got)
+            if (r < 0) throw IOException("closed")
+            got += r
+        }
+    }
+
+    private fun begin(t: Target, cable: Socket? = null) {
         teardown(false)
         epoch++
         hello = Prefs.helloInfo(app)
+        if (cable != null) hello?.bitrateMbps = Prefs.mbpsCable
+        isCable = cable != null
         target = t
         pairingKey = null
         session = null
@@ -318,23 +405,31 @@ class StreamClient(private val app: Context) {
         audio.muted = !Prefs.audioOn
         setState(State.CONNECTING, "")
 
-        val addr: InetAddress = try {
-            InetAddress.getByName(t.address)
-        } catch (e: Exception) {
-            fail("Unknown address: " + t.address)
-            return
-        }
-        val s = DatagramSocket()
-        NetBind.bind(app, s)
-        try { s.receiveBufferSize = 1 shl 21 } catch (e: Exception) { }
-        try { s.trafficClass = 0xB8 } catch (e: Exception) { }
-        socket = s
-        remote = addr
         val myEpoch = epoch
-        val rt = Thread({ receiveLoop(s, addr, myEpoch) }, "lumen-recv")
-        rt.isDaemon = true
-        rt.priority = Thread.MAX_PRIORITY
-        rt.start()
+        if (cable != null) {
+            synchronized(tcpLock) { tcp = cable; tcpOut = cable.getOutputStream() }
+            val rt = Thread({ tcpReceiveLoop(cable, myEpoch) }, "lumen-recv-usb")
+            rt.isDaemon = true
+            rt.priority = Thread.MAX_PRIORITY
+            rt.start()
+        } else {
+            val addr: InetAddress = try {
+                InetAddress.getByName(t.address)
+            } catch (e: Exception) {
+                fail("Unknown address: " + t.address)
+                return
+            }
+            val s = DatagramSocket()
+            NetBind.bind(app, s)
+            try { s.receiveBufferSize = 1 shl 21 } catch (e: Exception) { }
+            try { s.trafficClass = 0xB8 } catch (e: Exception) { }
+            socket = s
+            remote = addr
+            val rt = Thread({ receiveLoop(s, addr, myEpoch) }, "lumen-recv")
+            rt.isDaemon = true
+            rt.priority = Thread.MAX_PRIORITY
+            rt.start()
+        }
         timer = exec.scheduleWithFixedDelay(Runnable { onTick() }, 250, 250, TimeUnit.MILLISECONDS)
 
         val k = Prefs.loadPairingKey(t.key)
@@ -353,6 +448,9 @@ class StreamClient(private val app: Context) {
         socket = null
         try { s?.close() } catch (e: Exception) { }
         remote = null
+        val c = tcp
+        synchronized(tcpLock) { tcp = null; tcpOut = null }
+        try { c?.close() } catch (e: Exception) { }
         session = null
         handshakeDone = false
         if (pairingActive) notifyPairing(target.name, null)
@@ -516,7 +614,7 @@ class StreamClient(private val app: Context) {
     }
 
     private fun tickInner() {
-        if (socket == null) return
+        if (socket == null && tcp == null) return
         val n = now()
         if (pairingActive) {
             lastRx = n
@@ -594,6 +692,19 @@ class StreamClient(private val app: Context) {
     // MARK: Send
 
     private fun rawSend(pkt: ByteArray) {
+        if (tcp != null) {
+            synchronized(tcpLock) {
+                val o = tcpOut ?: return
+                try {
+                    val h = byteArrayOf((pkt.size ushr 24).toByte(), (pkt.size ushr 16).toByte(), (pkt.size ushr 8).toByte(), pkt.size.toByte())
+                    o.write(h)
+                    o.write(pkt)
+                    o.flush()
+                } catch (e: IOException) {
+                }
+            }
+            return
+        }
         val s = socket ?: return
         val a = remote ?: return
         try {

@@ -201,9 +201,13 @@ public sealed class MainForm : Form
             if (!_running) return;
             var (bytes, frames) = _s.DrainStats();
             if (_connected) _stats.Text = $"{bytes * 8 / 1e6:0.0} Mbps · {frames} fps";
-            _cable.Text = _s.CableDaemonReachable
-                ? (_s.CableDevices > 0 ? $"Cable: {_s.CableDevices} iPhone/iPad connected over USB." : "Cable: plug in an iPhone/iPad over USB (tap Trust).")
-                : "Cable needs iTunes or the Apple Devices app (Microsoft Store) installed.";
+            var cable = new List<string>();
+            if (_s.CableDevices > 0) cable.Add($"{_s.CableDevices} iPhone/iPad");
+            if (_s.AndroidCableDevices > 0) cable.Add($"{_s.AndroidCableDevices} Android");
+            if (cable.Count > 0) _cable.Text = "Cable: " + string.Join(" + ", cable) + " connected over USB.";
+            else if (_s.AndroidNeedsAuthorization) _cable.Text = "Cable: tap Allow on the phone (\"Allow USB debugging?\").";
+            else _cable.Text = "Cable: plug in a device. iPhone/iPad: tap Trust" + (_s.CableDaemonReachable ? "" : " (needs iTunes or Apple Devices)")
+                               + ". Android: turn on USB debugging once.";
         };
         _timer.Start();
 

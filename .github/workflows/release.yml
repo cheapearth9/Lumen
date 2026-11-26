@@ -209,6 +209,16 @@ jobs:
           Copy-Item "$root/bin/ffmpeg.exe" dist/win/ffmpeg.exe
           if (Test-Path "$root/LICENSE.txt") { Copy-Item "$root/LICENSE.txt" dist/win/FFMPEG-LICENSE.txt }
 
+      - name: Bundle adb (Android USB cable mode)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile pt.zip
+          Expand-Archive pt.zip -DestinationPath pt
+          New-Item -ItemType Directory -Force dist/win/platform-tools | Out-Null
+          foreach ($f in @('adb.exe', 'AdbWinApi.dll', 'AdbWinUsbApi.dll')) { Copy-Item "pt/platform-tools/$f" dist/win/platform-tools/ }
+          Get-ChildItem dist/win/platform-tools | Format-Table Name, Length
+
       - name: Fetch SudoVDA virtual display driver (from Apollo's release)
         continue-on-error: true
         shell: pwsh

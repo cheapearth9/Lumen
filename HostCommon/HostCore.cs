@@ -42,6 +42,7 @@ public sealed class HostCore : IDisposable
     private readonly IPlatformHost _p;
     private readonly HostServer _server = new();
     private readonly UsbMux _usb = new();
+    private readonly AdbTunnel _adb = new();
     private readonly SemaphoreSlim _ctl = new(1, 1);
 
     private FfmpegPipeline? _ff;
@@ -59,6 +60,9 @@ public sealed class HostCore : IDisposable
 
     public bool CableDaemonReachable => _usb.DaemonReachable;
     public int CableDevices => _usb.DeviceCount;
+    public int AndroidCableDevices => _adb.DeviceCount;
+    public bool AndroidNeedsAuthorization => _adb.NeedsAuthorization;
+    public bool AdbFound => _adb.AdbFound;
     public string ServerName { get; }
     public PairedStore Paired => _server.Paired;
     /// A device wants to pair: ask the user to type the 5-digit code the device shows, then call request.Submit(code).
@@ -110,6 +114,9 @@ public sealed class HostCore : IDisposable
             _usb.WantsTunnel = () => _server.WantsTunnel;
             _usb.OnTunnel = _server.AddTunnel;
             _usb.Start();
+            _adb.WantsTunnel = () => _server.WantsTunnel;
+            _adb.OnTunnel = _server.AddTunnel;
+            _adb.Start();
         }
         Advertise();
         Say("Waiting for a client (Wi-Fi or cable)…");
@@ -118,6 +125,7 @@ public sealed class HostCore : IDisposable
     public void Stop()
     {
         _usb.Stop();
+        _adb.Stop();
         try { _sd?.Unadvertise(); _sd?.Dispose(); } catch { }
         _sd = null;
         _server.Stop();

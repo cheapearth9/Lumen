@@ -10,7 +10,7 @@ pkgdesc="Lumen Host - stream this X11 screen to an iPhone or iPad"
 arch=('x86_64')
 url="https://github.com/cheapearth9/Lumen"
 license=('custom')
-depends=('ffmpeg' 'xorg-xdpyinfo' 'xorg-xrandr' 'glibc' 'gcc-libs' 'python-gobject' 'gstreamer' 'gst-plugin-pipewire' 'gst-plugins-base' 'gst-plugins-good' 'gst-plugins-bad' 'gst-plugin-va')
+depends=('ffmpeg' 'android-tools' 'xorg-xdpyinfo' 'xorg-xrandr' 'glibc' 'gcc-libs' 'python-gobject' 'gstreamer' 'gst-plugin-pipewire' 'gst-plugins-base' 'gst-plugins-good' 'gst-plugins-bad' 'gst-plugin-va')
 optdepends=('libpulse: system audio capture (pactl/parec)' )
 # The .NET single-file bundle appends data to the executable; stripping corrupts it.
 options=('!strip' '!debug')

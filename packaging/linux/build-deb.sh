@@ -28,7 +28,7 @@ Priority: optional
 Architecture: ${arch}
 Installed-Size: ${installed_size}
 Maintainer: Lumen <noreply@users.noreply.github.com>
-Depends: libc6, libstdc++6, ffmpeg, x11-utils, x11-xserver-utils, python3, python3-gi, gir1.2-gstreamer-1.0, gstreamer1.0-tools, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-vaapi
+Depends: libc6, libstdc++6, ffmpeg, adb, x11-utils, x11-xserver-utils, python3, python3-gi, gir1.2-gstreamer-1.0, gstreamer1.0-tools, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-vaapi
 Recommends: pulseaudio-utils | pipewire-pulse
 Homepage: https://github.com/cheapearth9/Lumen
 Description: Lumen Host - stream this screen to an iPhone or iPad

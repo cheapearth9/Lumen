@@ -40,6 +40,10 @@ object Prefs {
         get() = sp.getInt("fps", 60)
         set(v) { sp.edit().putInt("fps", v).apply() }
 
+    var mbpsCable: Int
+        get() = sp.getInt("mbpsCable", 100)
+        set(v) { sp.edit().putInt("mbpsCable", v).apply() }
+
     var mbpsWifi: Int
         get() = sp.getInt("mbpsWifi", 40)
         set(v) { sp.edit().putInt("mbpsWifi", v).apply() }

@@ -147,6 +147,23 @@ class SettingsActivity : Activity() {
             override fun onStopTrackingTouch(sb: SeekBar) {}
         })
         qCard.addView(seek, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val cableLabel = Ui.text(this, "USB cable bitrate: " + Prefs.mbpsCable + " Mbps", 14f, R.color.lumen_text2)
+        cableLabel.setPadding(0, Ui.dp(this, 12), 0, 0)
+        qCard.addView(cableLabel)
+        val cableSeek = SeekBar(this)
+        cableSeek.max = 142
+        cableSeek.progress = maxOf(8, minOf(150, Prefs.mbpsCable)) - 8
+        cableSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                Prefs.mbpsCable = progress + 8
+                cableLabel.text = "USB cable bitrate: " + (progress + 8) + " Mbps"
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+
+            override fun onStopTrackingTouch(sb: SeekBar) {}
+        })
+        qCard.addView(cableSeek, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         col.addView(qCard)
 
         // Keyboard + controllers

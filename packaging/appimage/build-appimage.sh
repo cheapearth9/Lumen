@@ -10,6 +10,7 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 appdir="$work/Lumen-Host.AppDir"
 install -Dm755 "$bin" "$appdir/usr/bin/lumenhost"
 "$here/../linux/fetch-ffmpeg.sh" "$arch" "$appdir/usr/bin/ffmpeg"
+[ "$arch" = x64 ] && "$here/../linux/fetch-adb.sh" "$appdir/usr/bin/adb" || echo "no adb bundled for $arch"
 install -m755 "$here/AppRun" "$appdir/AppRun"
 install -m644 "$here/lumen-host.desktop" "$appdir/lumen-host.desktop"
 install -m644 "$here/lumen-host.png" "$appdir/lumen-host.png"

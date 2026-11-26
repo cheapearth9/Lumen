@@ -24,6 +24,7 @@ modules:
     build-commands:
       - install -Dm755 lumenhost /app/bin/lumenhost
       - install -Dm755 ffmpeg /app/bin/ffmpeg
+      - install -Dm755 adb /app/bin/adb
       - sed -i 's/^Icon=.*/Icon=io.github.cheapearth9.Lumen/' lumen-host.desktop
       - install -Dm644 lumen-host.desktop /app/share/applications/io.github.cheapearth9.Lumen.desktop
       - install -Dm644 lumen.png /app/share/icons/hicolor/512x512/apps/io.github.cheapearth9.Lumen.png
@@ -32,6 +33,8 @@ modules:
         path: payload/lumenhost
       - type: file
         path: payload/ffmpeg
+      - type: file
+        path: payload/adb
       - type: file
         path: payload/lumen-host.desktop
       - type: file

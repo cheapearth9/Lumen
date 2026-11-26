@@ -11,6 +11,7 @@ app=io.github.cheapearth9.Lumen
 rm -rf "$here/payload"; mkdir -p "$here/payload"
 install -m755 "$bin" "$here/payload/lumenhost"
 "$repo/packaging/linux/fetch-ffmpeg.sh" x64 "$here/payload/ffmpeg"
+"$repo/packaging/linux/fetch-adb.sh" "$here/payload/adb"
 cp "$repo/packaging/linux/files/lumen-host.desktop" "$here/payload/"
 cp "$repo/HostLinux/packaging/lumen.png" "$here/payload/"
 

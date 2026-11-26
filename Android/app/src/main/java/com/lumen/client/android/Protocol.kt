@@ -3,6 +3,8 @@ package com.lumen.client.android
 import java.io.ByteArrayOutputStream
 
 const val LUMEN_PORT = 47900
+/** The host reaches this port through `adb forward` over the USB cable (loopback only). */
+const val LUMEN_CABLE_PORT = 47901
 
 object PacketType {
     const val HELLO = 1
