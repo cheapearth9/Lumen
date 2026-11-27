@@ -29,6 +29,8 @@ public sealed class HostClient
     internal readonly HashSet<uint> Recent = new();
     internal readonly Queue<uint> RecentOrder = new();
     public object? Tag { get; set; }
+    /// Hex id of the paired device behind this connection.
+    public string? KeyId => Link.KeyId;
     public bool IsCable => Link is TcpLink;
     public long Dropped => (Link as TcpLink)?.Dropped ?? 0;
 }
@@ -190,7 +192,9 @@ public sealed class HostServer : IDisposable
         internal Func<string, bool> SubmitImpl = _ => false;
         internal Action CancelImpl = () => { };
         /// Returns true when the typed code was right (the device is then paired).
-        public bool Submit(string typed) => SubmitImpl(typed);
+        public bool Submit(string typed, string? name = null) { ChosenName = name; return SubmitImpl(typed); }
+        /// The name the host's owner gave the device (it also names the virtual display in Windows).
+        internal string? ChosenName;
         public void Cancel() => CancelImpl();
     }
 
@@ -416,7 +420,7 @@ public sealed class HostServer : IDisposable
                 if (ok)
                 {
                     _pairFailures = 0;
-                    Paired.Add(ph.DeviceName, ph.Secret!);
+                    Paired.Add(string.IsNullOrWhiteSpace(req.ChosenName) ? ph.DeviceName : req.ChosenName.Trim(), ph.Secret!);
                     SendPairResult(link, 0);
                 }
                 else

@@ -23,7 +23,7 @@ public sealed class WindowsPlatform : IPlatformHost
 
     // Virtual displays outlive sessions (like Sunshine/Apollo): Windows keeps the windows and layout on them while the
     // device is away, and reconnecting does not have to create a monitor again. One slot per simultaneous extend client.
-    private sealed class Slot { public int Index; public SudoVda? Vda; public (int W, int H) Size; public bool InUse; }
+    private sealed class Slot { public int Index; public SudoVda? Vda; public (int W, int H) Size; public string Name = ""; public bool InUse; }
     private readonly List<Slot> _slots = new();
     private readonly object _slotLock = new();
 
@@ -57,8 +57,12 @@ public sealed class WindowsPlatform : IPlatformHost
     }
 
     /// One client's display + input. Extend = its own virtual display (or an unused monitor); mirror = the screen picked in the window.
-    public IPlatformSession OpenSession(bool extend, int clientW, int clientH, out string? note)
+    public IPlatformSession OpenSession(bool extend, int clientW, int clientH, string deviceName, out string? note)
     {
+        // The monitor is named after the paired device (shows up in Windows Settings > Display); 13 ASCII characters max.
+        var sb = new System.Text.StringBuilder();
+        foreach (char ch in deviceName) { if (sb.Length >= 13) break; sb.Append(ch >= 32 && ch < 127 ? ch : '?'); }
+        string monName = sb.Length == 0 ? "Lumen" : sb.ToString();
         note = null;
         string? deviceName = null;
         Slot? slot = null;
@@ -71,14 +75,15 @@ public sealed class WindowsPlatform : IPlatformHost
                 int vw = Math.Max(640, clientW), vh = Math.Max(480, clientH);
                 lock (_slotLock)
                 {
-                    slot = _slots.FirstOrDefault(x => !x.InUse && x.Vda is { Alive: true } && x.Size == (vw, vh)) ?? _slots.FirstOrDefault(x => !x.InUse);
+                    slot = _slots.FirstOrDefault(x => !x.InUse && x.Vda is { Alive: true } && x.Size == (vw, vh) && x.Name == monName) ?? _slots.FirstOrDefault(x => !x.InUse && x.Vda is { Alive: true } && x.Size == (vw, vh)) ?? _slots.FirstOrDefault(x => !x.InUse);
                     if (slot == null) { slot = new Slot { Index = _slots.Count }; _slots.Add(slot); }
                     slot.InUse = true;
-                    if (slot.Vda == null || !slot.Vda.Alive || slot.Size != (vw, vh))
+                    if (slot.Vda == null || !slot.Vda.Alive || slot.Size != (vw, vh) || slot.Name != monName)
                     {
                         try { slot.Vda?.Dispose(); } catch { }
-                        slot.Vda = SudoVda.Create(vw, vh, 60, "Lumen", slot.Index);
+                        slot.Vda = SudoVda.Create(vw, vh, 60, monName, slot.Index);
                         slot.Size = (vw, vh);
+                        slot.Name = monName;
                     }
                 }
                 if (slot.Vda?.DeviceName is { } dn)

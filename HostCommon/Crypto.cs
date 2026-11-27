@@ -142,6 +142,29 @@ public sealed class PairedStore
         Save(list);
     }
 
+    public string? NameFor(string? keyIdHex)
+    {
+        if (keyIdHex == null) return null;
+        var id = keyIdHex.ToLowerInvariant();
+        return All().FirstOrDefault(x => x.Id == id)?.Name;
+    }
+
+    public void Rename(string id, string name)
+    {
+        var list = All();
+        int i = list.FindIndex(x => x.Id == id);
+        if (i < 0 || string.IsNullOrWhiteSpace(name)) return;
+        list[i] = list[i] with { Name = name.Trim() };
+        Save(list);
+    }
+
+    public void Remove(string id)
+    {
+        var list = All();
+        list.RemoveAll(x => x.Id == id);
+        Save(list);
+    }
+
     public void RemoveAll() => Save(new());
 
     private void Save(List<Device> list)

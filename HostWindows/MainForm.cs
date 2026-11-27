@@ -21,6 +21,7 @@ public sealed class MainForm : Form
     private readonly Label _pairInfo = new() { AutoSize = true, MaximumSize = new Size(400, 0) };
     private readonly FlowLayoutPanel _pairBox = new() { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
     private readonly TextBox _pairInput = new() { Width = 110, MaxLength = 8, Font = new Font("Consolas", 14f) };
+    private readonly TextBox _pairName = new() { Width = 150, MaxLength = 13 };
     private readonly Button _pairOk = new() { Text = "Pair", AutoSize = true };
     private readonly Button _pairCancel = new() { Text = "Cancel", AutoSize = true };
     private HostServer.PairRequest? _request;
@@ -104,10 +105,16 @@ public sealed class MainForm : Form
         codeRow.Controls.Add(_pairInfo);
         codeRow.Controls.Add(_pairBox);
         codeRow.Controls.Add(forget);
+        var rename = new Button { Text = "Rename paired devices…", AutoSize = true };
+        rename.Click += (_, _) => ShowDevices();
+        codeRow.Controls.Add(rename);
         _pairBox.Visible = false;
         _pairOk.Click += (_, _) => SubmitPair();
         _pairCancel.Click += (_, _) => { _request?.Cancel(); };
         _pairInput.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { SubmitPair(); e.SuppressKeyPress = true; } };
+        _pairBox.Controls.Add(new Label { Text = "Name:", AutoSize = true, Margin = new Padding(0, 10, 0, 0) });
+        _pairBox.Controls.Add(_pairName);
+        _pairBox.Controls.Add(new Label { Text = "Code:", AutoSize = true, Margin = new Padding(6, 10, 0, 0) });
         _pairBox.Controls.Add(_pairInput);
         _pairBox.Controls.Add(_pairOk);
         _pairBox.Controls.Add(_pairCancel);
@@ -117,6 +124,7 @@ public sealed class MainForm : Form
             _pairInfo.Text = $"\"{req.DeviceName}\" wants to pair. Type the 5-digit code shown on it:";
             _pairBox.Visible = true;
             _pairInput.Text = "";
+            _pairName.Text = req.DeviceName.Length > 13 ? req.DeviceName[..13] : req.DeviceName;
             _pairInput.Focus();
             Activate();
         });
@@ -252,8 +260,34 @@ public sealed class MainForm : Form
     {
         var r = _request;
         if (r == null) return;
-        bool ok = r.Submit(_pairInput.Text);
+        bool ok = r.Submit(_pairInput.Text, _pairName.Text);
         _pairInfo.Text = ok ? "Paired." : "Wrong code. Start pairing again on the device.";
+    }
+
+    /// Paired devices: give each one a name (also the name of its display in Windows Settings > Display) or remove it.
+    private void ShowDevices()
+    {
+        using var dlg = new Form { Text = "Paired devices", StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(380, 250), FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false };
+        var list = new ListBox { Left = 10, Top = 10, Width = 360, Height = 150 };
+        var name = new TextBox { Left = 10, Top = 170, Width = 200, MaxLength = 13 };
+        var save = new Button { Text = "Rename", Left = 215, Top = 168, Width = 75 };
+        var remove = new Button { Text = "Remove", Left = 295, Top = 168, Width = 75 };
+        var hint = new Label { Left = 10, Top = 205, Width = 360, Height = 36, ForeColor = SystemColors.GrayText, Text = "The name is also used for the device's display in Windows Settings > Display (13 characters max; applies the next time it connects)." };
+        List<PairedStore.Device> devices = new();
+        void Reload()
+        {
+            devices = _s.Paired.All();
+            list.Items.Clear();
+            foreach (var d in devices) list.Items.Add(d.Name);
+            name.Text = "";
+        }
+        list.SelectedIndexChanged += (_, _) => { if (list.SelectedIndex >= 0) name.Text = devices[list.SelectedIndex].Name; };
+        save.Click += (_, _) => { if (list.SelectedIndex >= 0) { _s.Paired.Rename(devices[list.SelectedIndex].Id, name.Text); Reload(); } };
+        remove.Click += (_, _) => { if (list.SelectedIndex >= 0) { _s.Paired.Remove(devices[list.SelectedIndex].Id); Reload(); } };
+        dlg.Controls.AddRange(new Control[] { list, name, save, remove, hint });
+        Reload();
+        dlg.ShowDialog(this);
+        UpdatePaired();
     }
 
     private void UpdatePaired()

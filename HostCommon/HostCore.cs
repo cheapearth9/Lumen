@@ -37,7 +37,7 @@ public interface IPlatformHost
 
     /// Start a session for one client. Platforms that can serve several clients at once (separate virtual displays and
     /// input mapping per client) override this; the default shares the single display state.
-    IPlatformSession OpenSession(bool extend, int clientW, int clientH, out string? note)
+    IPlatformSession OpenSession(bool extend, int clientW, int clientH, string deviceName, out string? note)
     {
         var s = new SharedPlatformSession(this, extend, clientW, clientH);
         note = s.Note;
@@ -239,7 +239,7 @@ public sealed class HostCore : IDisposable
             StopSession(sess);
 
             bool wantExtend = _modeOverride ?? h.WantsExtend;
-            var plat = _p.OpenSession(wantExtend, h.Width, h.Height, out var note);
+            var plat = _p.OpenSession(wantExtend, h.Width, h.Height, Paired.NameFor(client.KeyId) ?? "Lumen", out var note);
             sess.Plat = plat;
             _extended = plat.Extended;
             if (note != null) { Say(note); _server.SendStatus(client, note, error: false); }
