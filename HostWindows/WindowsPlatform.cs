@@ -64,7 +64,7 @@ public sealed class WindowsPlatform : IPlatformHost
         foreach (char ch in deviceName) { if (sb.Length >= 13) break; sb.Append(ch >= 32 && ch < 127 ? ch : '?'); }
         string monName = sb.Length == 0 ? "Lumen" : sb.ToString();
         note = null;
-        string? deviceName = null;
+        string? monitor = null;
         Slot? slot = null;
         if (!extend) ReleaseIdleSlots();
         else
@@ -88,19 +88,19 @@ public sealed class WindowsPlatform : IPlatformHost
                 }
                 if (slot.Vda?.DeviceName is { } dn)
                 {
-                    for (int i = 0; i < 20 && deviceName == null; i++)
+                    for (int i = 0; i < 20 && monitor == null; i++)
                     {
-                        if (Screen.AllScreens.Any(sc => string.Equals(sc.DeviceName, dn, StringComparison.OrdinalIgnoreCase))) deviceName = dn;
+                        if (Screen.AllScreens.Any(sc => string.Equals(sc.DeviceName, dn, StringComparison.OrdinalIgnoreCase))) monitor = dn;
                         else Thread.Sleep(150);
                     }
                 }
-                if (deviceName == null)
+                if (monitor == null)
                 {
                     lock (_slotLock) { try { slot.Vda?.Dispose(); } catch { } slot.Vda = null; slot.InUse = false; }
                     slot = null;
                 }
             }
-            if (deviceName == null)
+            if (monitor == null)
             {
                 var all = Screen.AllScreens;
                 int second = Array.FindIndex(all, s => !s.Primary);
@@ -115,13 +115,13 @@ public sealed class WindowsPlatform : IPlatformHost
                         second = Array.FindIndex(all, s => !s.Primary);
                     }
                 }
-                if (second >= 0) deviceName = all[second].DeviceName;
+                if (second >= 0) monitor = all[second].DeviceName;
                 else note = VirtualDisplayInstalled()
                     ? "Extend: Windows did not enable the virtual display, so the screen is mirrored."
                     : "Extend needs a virtual display driver. Click \"Install virtual display\" in the Lumen Host window (one time), then try again. Mirroring for now.";
             }
         }
-        return new WinSession(this, deviceName, slot);
+        return new WinSession(this, monitor, slot);
     }
 
     private sealed class WinSession : IPlatformSession
