@@ -249,7 +249,12 @@ public sealed class InputInjector
         {
             case 0: me = MakeContact(id, px, py, INRANGE | INCONTACT | DOWN); break;
             case 1:
-                if (!_contacts.ContainsKey(id)) return;
+                if (!_contacts.ContainsKey(id))
+                {
+                    // The 'down' was lost on the way (UDP): treat the first move as the touch start instead of ignoring the stroke.
+                    Touch(id, 0, nx, ny, monitor);
+                    return;
+                }
                 me = MakeContact(id, px, py, INRANGE | INCONTACT | UPDATE); break;
             default:
                 if (!_contacts.TryGetValue(id, out var last)) return;
@@ -261,6 +266,8 @@ public sealed class InputInjector
         {
             HostLog.Write($"touch injection failed (error {Marshal.GetLastWin32Error()}, phase {phase})");
             _contacts.Clear(); _downAt.Clear();
+            // Windows may still hold the failed contacts; re-initialising clears them so the next touch works.
+            try { InitializeTouchInjection(10, 1); } catch { }
             return;
         }
 

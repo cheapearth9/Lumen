@@ -55,6 +55,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         client = LumenApp.client
+        Prefs.applyOrientation(this, false)
         buildUi()
     }
 

@@ -88,6 +88,15 @@ class SettingsActivity : Activity() {
         touchCard.addView(note("Touchpad moves the cursor like a laptop trackpad. Touchscreen sends your touches to the computer where you tap (native multi-touch on Windows and Linux)."))
         col.addView(touchCard)
 
+        // Orientation
+        col.addView(Ui.sectionTitle(this, "Orientation"))
+        val orientCard = Ui.card(this)
+        orientCard.addView(radios(arrayOf("Auto", "Portrait", "Landscape"), Prefs.orientation) { i ->
+            Prefs.orientation = i
+            Prefs.applyOrientation(this, false)
+        })
+        col.addView(orientCard)
+
         // Display
         col.addView(Ui.sectionTitle(this, "Display"))
         val dispCard = Ui.card(this)

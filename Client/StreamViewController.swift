@@ -207,6 +207,16 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
         }
         let touchMenu = UIMenu(title: "", options: .displayInline, children: [pad, screen])
 
+        let om = LumenSettings.orientation
+        func orient(_ title: String, _ icon: String, _ v: String) -> UIAction {
+            UIAction(title: title, image: UIImage(systemName: icon), state: om == v ? .on : .off) { [weak self] _ in
+                LumenSettings.orientation = v; self?.rebuildMenu()
+            }
+        }
+        let orientMenu = UIMenu(title: "", options: .displayInline, children: [
+            orient("Auto-rotate", "rotate.3d", "auto"), orient("Portrait", "rectangle.portrait", "portrait"),
+            orient("Landscape", "rectangle", "landscape")])
+
         let lock = UIAction(title: locked ? "Release mouse (Ctrl+Opt+L)" : "Capture mouse for games (Ctrl+Opt+L)",
                             image: UIImage(systemName: locked ? "cursorarrow.slash" : "cursorarrow.motionlines"),
                             state: locked ? .on : .off) { [weak self] _ in self?.locked.toggle() }
@@ -231,7 +241,7 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
             btn.sendActions(for: .touchUpInside)
         }
         let airplay = UIMenu(title: "AirPlay", image: UIImage(systemName: "airplayvideo"), children: [airplayToggle, airplayPick])
-        menuButton.menu = UIMenu(children: [displayMenu, sound, touchMenu, keyboard, airplay, lock, disc])
+        menuButton.menu = UIMenu(children: [displayMenu, sound, touchMenu, orientMenu, keyboard, airplay, lock, disc])
     }
 
     // MARK: Geometry

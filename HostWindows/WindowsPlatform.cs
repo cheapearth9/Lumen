@@ -138,10 +138,34 @@ public sealed class WindowsPlatform : IPlatformHost
         {
             _p = p; _device = device; _slot = slot;
             Extended = device != null;
-            _input.Configure(Screen_().Bounds, SystemInformation.VirtualScreen);
+            _lastBounds = Screen_().Bounds;
+            _input.Configure(_lastBounds, SystemInformation.VirtualScreen);
+            _watch = new System.Threading.Timer(_ => CheckLayout(), null, 700, 700);
         }
 
         public bool Extended { get; }
+
+        public event Action? LayoutChanged;
+        private Rectangle _lastBounds, _pendingBounds;
+        private readonly System.Threading.Timer _watch;
+        private long _inputCheck;
+        private volatile bool _disposed;
+
+        /// Keeps touch/mouse mapped to where the monitor is now, and reports a changed arrangement (needs two equal polls = settled).
+        private void CheckLayout()
+        {
+            if (_disposed) return;
+            try
+            {
+                var b = Screen_().Bounds;
+                _input.Configure(b, SystemInformation.VirtualScreen);
+                if (b == _lastBounds) { _pendingBounds = default; return; }
+                if (b != _pendingBounds) { _pendingBounds = b; return; }
+                _lastBounds = b; _pendingBounds = default;
+                LayoutChanged?.Invoke();
+            }
+            catch { }
+        }
 
         private Screen Screen_()
         {
@@ -152,13 +176,24 @@ public sealed class WindowsPlatform : IPlatformHost
         }
 
         public (int W, int H) SourceSize { get { var b = Screen_().Bounds; return (b.Width, b.Height); } }
-        public void HandleInput(InputEvent e) => _input.Handle(e);
+        public void HandleInput(InputEvent e)
+        {
+            // Touch down: re-read the monitor position first so a just-moved monitor is hit correctly.
+            if (e.Kind == InputKind.Touch && e.B == 0 && Environment.TickCount64 - _inputCheck > 150)
+            {
+                _inputCheck = Environment.TickCount64;
+                try { _input.Configure(Screen_().Bounds, SystemInformation.VirtualScreen); } catch { }
+            }
+            _input.Handle(e);
+        }
         public void ReleaseInput() => _input.ReleaseAll();
         public Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bps, bool needScale, bool h264, Action<string> status) =>
             _p.BuildCandidatesFor(Screen_(), w, h, fps, bps, needScale, h264, status);
 
         public void Dispose()
         {
+            _disposed = true;
+            try { _watch.Dispose(); } catch { }
             try { _input.ReleaseAll(); } catch { }
             if (_slot != null) lock (_p._slotLock) _slot.InUse = false;
         }

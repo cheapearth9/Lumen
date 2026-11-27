@@ -17,6 +17,10 @@ struct LumenClientApp: App {
 /// Giving it a window means the monitor becomes a real extended display showing the stream
 /// instead of a plain mirror of the device screen.
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        return LumenSettings.orientationMask
+    }
+
     func application(_ application: UIApplication,
                      configurationForConnecting connectingSceneSession: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
@@ -152,6 +156,19 @@ enum ResolutionSetting {
     }
 }
 
+struct OrientationPicker: View {
+    @AppStorage(LumenSettings.orientationKey) private var mode = "auto"
+    var body: some View {
+        Picker("Orientation", selection: $mode) {
+            Text("Auto").tag("auto")
+            Text("Portrait").tag("portrait")
+            Text("Landscape").tag("landscape")
+        }
+        .pickerStyle(.segmented)
+        .onChange(of: mode) { _ in LumenSettings.applyOrientation() }
+    }
+}
+
 struct ResolutionPicker: View {
     @AppStorage(ResolutionSetting.modeKey) private var mode = 0
     @AppStorage(ResolutionSetting.widthKey) private var w = 1920
@@ -266,6 +283,8 @@ struct ConnectView: View {
                     Toggle("Sound", isOn: $audioOn)
                 }
 
+                Section("Orientation") { OrientationPicker() }
+
                 Section("Touch") {
                     Picker("Touch mode", selection: $touchMode) {
                         Text("Touchpad").tag(TouchEngine.Mode.touchpad.rawValue)
@@ -345,6 +364,7 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     Toggle("Sound", isOn: $audioOn)
                 }
+                Section("Orientation") { OrientationPicker() }
                 Section("Resolution") { ResolutionPicker() }
                 Section {
                     Toggle("Show the on-screen keyboard when streaming starts", isOn: $keyboardAuto)

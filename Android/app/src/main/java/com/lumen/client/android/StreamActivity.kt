@@ -48,6 +48,9 @@ class StreamActivity : Activity(), TouchDelegate {
         const val ID_KEYBOARD = 7
         const val ID_CAPTURE = 8
         const val ID_DISCONNECT = 9
+        const val ID_ORIENT_AUTO = 10
+        const val ID_ORIENT_PORTRAIT = 11
+        const val ID_ORIENT_LANDSCAPE = 12
     }
 
     private var ready = false
@@ -96,6 +99,7 @@ class StreamActivity : Activity(), TouchDelegate {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Prefs.applyOrientation(this, true)
         client = LumenApp.client
         if (client.state != StreamClient.State.STREAMING) {
             finish()
@@ -460,7 +464,10 @@ class StreamActivity : Activity(), TouchDelegate {
         if (Build.VERSION.SDK_INT >= 26) {
             m.add(0, ID_CAPTURE, 7, if (locked) "Release mouse (Ctrl+Alt+L)" else "Capture mouse for games (Ctrl+Alt+L)")
         }
-        m.add(0, ID_DISCONNECT, 8, "Disconnect")
+        val oa = m.add(1, ID_ORIENT_AUTO, 8, "Auto-rotate"); oa.isCheckable = true; oa.isChecked = Prefs.orientation == 0
+        val op = m.add(1, ID_ORIENT_PORTRAIT, 8, "Portrait"); op.isCheckable = true; op.isChecked = Prefs.orientation == 1
+        val ol = m.add(1, ID_ORIENT_LANDSCAPE, 8, "Landscape"); ol.isCheckable = true; ol.isChecked = Prefs.orientation == 2
+        m.add(0, ID_DISCONNECT, 9, "Disconnect")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 ID_MIRROR -> client.setExtend(false)
@@ -476,6 +483,9 @@ class StreamActivity : Activity(), TouchDelegate {
                 }
                 ID_KEYBOARD -> setKeyboard(!kbShown)
                 ID_CAPTURE -> toggleLock()
+                ID_ORIENT_AUTO -> { Prefs.orientation = 0; Prefs.applyOrientation(this, true) }
+                ID_ORIENT_PORTRAIT -> { Prefs.orientation = 1; Prefs.applyOrientation(this, true) }
+                ID_ORIENT_LANDSCAPE -> { Prefs.orientation = 2; Prefs.applyOrientation(this, true) }
                 ID_DISCONNECT -> client.disconnect()
             }
             true

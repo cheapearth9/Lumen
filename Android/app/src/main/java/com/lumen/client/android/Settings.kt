@@ -28,6 +28,21 @@ object Prefs {
         get() = sp.getString("touchMode", TOUCHSCREEN) ?: TOUCHSCREEN
         set(v) { sp.edit().putString("touchMode", v).apply() }
 
+    /** 0 auto, 1 portrait, 2 landscape. */
+    var orientation: Int
+        get() = sp.getInt("orientation", 0)
+        set(v) { sp.edit().putInt("orientation", v).apply() }
+
+    /** Applies the orientation choice to an activity; the stream defaults to landscape when set to auto. */
+    fun applyOrientation(a: android.app.Activity, stream: Boolean) {
+        a.requestedOrientation = when (orientation) {
+            1 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            2 -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else -> if (stream) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
     var extend: Boolean
         get() = sp.getBoolean("extendMode", false)
         set(v) { sp.edit().putBoolean("extendMode", v).apply() }

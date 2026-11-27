@@ -1,11 +1,42 @@
 import Foundation
 import VideoToolbox
+import UIKit
 
 /// User preferences shared by the SwiftUI connect screen (via @AppStorage with the same keys) and UIKit code.
 enum LumenSettings {
     static let audioKey = "audioOn"
     static let extendKey = "extendMode"
     static let touchModeKey = "touchMode"
+    static let orientationKey = "orientationLock"   // "auto" | "portrait" | "landscape"
+
+    static var orientation: String {
+        get { UserDefaults.standard.string(forKey: orientationKey) ?? "auto" }
+        set { UserDefaults.standard.set(newValue, forKey: orientationKey); applyOrientation() }
+    }
+
+    static var orientationMask: UIInterfaceOrientationMask {
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        switch orientation {
+        case "portrait": return pad ? [.portrait, .portraitUpsideDown] : .portrait
+        case "landscape": return .landscape
+        default: return pad ? .all : .allButUpsideDown
+        }
+    }
+
+    /// Rotates the screen to match the chosen lock right away (the mask alone only applies on the next rotation).
+    static func applyOrientation() {
+        DispatchQueue.main.async {
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .filter { $0.screen == UIScreen.main }
+            for scene in scenes {
+                for w in scene.windows { w.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations() }
+                let cur = scene.interfaceOrientation
+                let want = orientationMask
+                if want.contains(UIInterfaceOrientationMask(rawValue: 1 << UInt(cur.rawValue))) { continue }
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: want)) { _ in }
+            }
+        }
+    }
 
     /// Sound on by default.
     static var audioOn: Bool {

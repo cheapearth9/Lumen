@@ -54,6 +54,8 @@ public interface IPlatformSession : IDisposable
     void HandleInput(InputEvent e);
     void ReleaseInput();
     Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bitrateBps, bool needScale, bool h264, Action<string> status);
+    /// Raised when the captured display's position or size changed (monitor arrangement edited); capture is restarted, the client stays connected.
+    event Action? LayoutChanged { add { } remove { } }
 }
 
 /// Platforms with a single display state (Linux) share it between sessions.
@@ -254,6 +256,13 @@ public sealed class HostCore : IDisposable
             bool wantExtend = _modeOverride ?? h.WantsExtend;
             var plat = _p.OpenSession(wantExtend, h.Width, h.Height, Paired.NameFor(client.KeyId) ?? "Lumen", out var note);
             sess.Plat = plat;
+            plat.LayoutChanged += () =>
+            {
+                if (!ReferenceEquals(sess.Plat, plat) || !sess.Active || !TryAutoRestart(client)) return;
+                Say("Monitor layout changed - restarting capture.");
+                var hello = sess.Hello;
+                _ = Task.Run(async () => { if (!ReferenceEquals(client.Tag, sess)) return; await BeginAsync(client, hello, force: true); });
+            };
             _extended = plat.Extended;
             if (note != null) { Say(note); _server.SendStatus(client, note, error: false); }
             ModeChanged?.Invoke(_extended);
@@ -286,7 +295,20 @@ public sealed class HostCore : IDisposable
             ff.Frame += (data, key, sets) => OnFrame(sess, data, key, sets);
             ff.Dropped += () => _server.SkipFrame(client);
             ff.Attempt += name => Say("Starting: " + name);
-            ff.Failed += msg => { if (ReferenceEquals(sess.Ff, ff)) Fail(sess, msg); };
+            ff.Failed += msg =>
+            {
+                if (!ReferenceEquals(sess.Ff, ff)) return;
+                // Capture that was working and then died (monitor moved / resolution or layout change, GPU mode switch):
+                // start it again instead of dropping the client. Give up after 3 restarts within a minute.
+                if (sess.GotKey && sess.Active && TryAutoRestart(client))
+                {
+                    Say("Capture stopped (" + msg + ") - restarting.");
+                    var hello = sess.Hello;
+                    _ = Task.Run(async () => { await Task.Delay(500); if (!ReferenceEquals(client.Tag, sess)) return; await BeginAsync(client, hello, force: true); });
+                    return;
+                }
+                Fail(sess, msg);
+            };
             EnsureTimers();
             sess.Ff = ff;
             ff.Start(_p.FfmpegPath, candidates, h.WantsH264);
@@ -304,6 +326,21 @@ public sealed class HostCore : IDisposable
     private void SendWelcome(Session s, (int W, int H) src) =>
         _server.SendWelcome(s.Client, new WelcomeInfo((ushort)s.Size.W, (ushort)s.Size.H, (byte)s.Size.Fps, _p.Capabilities,
                                                       (ushort)Math.Min(src.W, 65535), (ushort)Math.Min(src.H, 65535), s.Plat is { Extended: true } ? (byte)1 : (byte)0));
+
+    private readonly Dictionary<HostClient, List<long>> _restarts = new();
+
+    private bool TryAutoRestart(HostClient c)
+    {
+        lock (_restarts)
+        {
+            if (!_restarts.TryGetValue(c, out var l)) _restarts[c] = l = new List<long>();
+            long now = Environment.TickCount64;
+            l.RemoveAll(t => now - t > 60_000);
+            if (l.Count >= 3) return false;
+            l.Add(now);
+            return true;
+        }
+    }
 
     private void Fail(Session s, string message)
     {
