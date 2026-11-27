@@ -269,7 +269,8 @@ public sealed class HostServer : IDisposable
         {
             drop = _clients.Where(c => (DateTime.UtcNow - c.LastHeard).TotalSeconds > 5).ToList();
             // A tunnel that never says hello (app busy / not ready) is closed so the next attempt starts clean.
-            stale = _tunnels.Where(t => (DateTime.UtcNow - t.Created).TotalSeconds > 4).ToList();
+            // Not while the device is pairing: the person is typing the code, and closing would make it show a new one.
+            stale = _tunnels.Where(t => (DateTime.UtcNow - t.Created).TotalSeconds > (t.Pairing != null ? 150 : 4)).ToList();
             foreach (var k in _udpLinks.Where(kv => !_clients.Any(c => ReferenceEquals(c.Link, kv.Value)) && (DateTime.UtcNow - kv.Value.LastSeen).TotalSeconds > 60)
                                        .Select(kv => kv.Key).ToList())
                 _udpLinks.Remove(k);

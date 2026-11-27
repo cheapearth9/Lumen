@@ -86,6 +86,9 @@ public sealed class WindowsPlatform : IPlatformHost
                         slot.Name = monName;
                     }
                 }
+                // Same device, other size/slot left over from an earlier connection: remove it so only one display remains.
+                lock (_slotLock)
+                    foreach (var o in _slots.Where(x => !x.InUse && x != slot && x.Name == monName && x.Vda != null)) { try { o.Vda!.Dispose(); } catch { } o.Vda = null; }
                 if (slot.Vda?.DeviceName is { } dn)
                 {
                     for (int i = 0; i < 20 && monitor == null; i++)

@@ -226,6 +226,19 @@ public sealed class HostCore : IDisposable
         var sess = SessionOf(client);
         try
         {
+            // The same device came back over another link (Wi-Fi -> cable or the reverse): end its old session first so
+            // its display is reused instead of a second one being added.
+            List<Session> old;
+            lock (_sessions) old = _sessions.Where(x => !ReferenceEquals(x, sess) && x.Client.KeyId != null && x.Client.KeyId == client.KeyId).ToList();
+            foreach (var d in old)
+            {
+                lock (_sessions) _sessions.Remove(d);
+                d.Client.Tag = null;
+                d.Active = false;
+                try { d.Plat?.ReleaseInput(); } catch { }
+                StopSession(d);
+            }
+
             if (!force && sess.Active && sess.Hello == h && sess.Plat != null)
             {
                 // Client repeated its hello (our welcome was probably lost).
