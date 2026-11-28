@@ -338,6 +338,8 @@ public sealed class InputInjector
         [101] = (0x43, false), [103] = (0x57, false), [109] = (0x44, false), [111] = (0x58, false),
         [114] = (0x52, true), [115] = (0x47, true), [116] = (0x49, true), [117] = (0x53, true), [118] = (0x3E, false),
         [119] = (0x4F, true), [120] = (0x3C, false), [121] = (0x51, true), [122] = (0x3B, false),
+        // media keys from the iPad's Touch Bar row (custom codes 200+)
+        [200] = (0x20, true), [201] = (0x2E, true), [202] = (0x30, true), [203] = (0x22, true), [204] = (0x19, true), [205] = (0x10, true),
         [123] = (0x4B, true), [124] = (0x4D, true), [125] = (0x50, true), [126] = (0x48, true),
     };
 }

@@ -42,16 +42,19 @@ final class LaptopPanelView: UIView {
         bar.backgroundColor = .black
         bar.layer.cornerRadius = 10
         addSubview(bar)
-        let fcodes: [UInt16] = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111]
-        var specs: [KeySpec] = [KeySpec(label: "esc", code: 53, width: 1.4, small: true)]
-        for (i, c) in fcodes.enumerated() { specs.append(KeySpec(label: "F\(i + 1)", code: c, small: true)) }
-        for s in specs {
+        // Touch Bar: media / volume controls (Windows host; other hosts ignore them).
+        let media: [KeySpec] = [KeySpec(label: "⏮", code: 205, width: 1), KeySpec(label: "⏯", code: 203, width: 1), KeySpec(label: "⏭", code: 204, width: 1),
+                                KeySpec(label: "mute", code: 200, width: 1), KeySpec(label: "vol −", code: 201, width: 1), KeySpec(label: "vol +", code: 202, width: 1)]
+        for s in media {
             let k = KeyView(label: s.label, code: s.code, small: true, touchBar: true)
             k.widthUnits = s.width
             bar.addSubview(k); barKeys.append(k)
         }
 
         func row(_ s: [KeySpec]) { rowSpecs.append(s) }
+        // Normal function-key row
+        let fcodes: [UInt16] = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111]
+        row([KeySpec(label: "esc", code: 53, width: 1.4, small: true)] + fcodes.enumerated().map { KeySpec(label: "F\($0.offset + 1)", code: $0.element, small: true) })
         let nums: [(String, UInt16)] = [("`", 50), ("1", 18), ("2", 19), ("3", 20), ("4", 21), ("5", 23), ("6", 22), ("7", 26), ("8", 28), ("9", 25), ("0", 29), ("-", 27), ("=", 24)]
         row(nums.map { KeySpec(label: $0.0, code: $0.1) } + [KeySpec(label: "delete", code: 51, width: 2, small: true)])
         let q: [(String, UInt16)] = [("Q", 12), ("W", 13), ("E", 14), ("R", 15), ("T", 17), ("Y", 16), ("U", 32), ("I", 34), ("O", 31), ("P", 35), ("[", 33), ("]", 30)]
@@ -75,8 +78,8 @@ final class LaptopPanelView: UIView {
             rows.append(keys)
         }
         // the up/down arrows share the cell between left and right
-        rows[5][7].isHidden = true
-        rows[5][7].widthUnits = 1
+        rows[6][7].isHidden = true
+        rows[6][7].widthUnits = 1
         addSubview(arrowUp); addSubview(arrowDown)
 
         padSurface.backgroundColor = UIColor(white: 0.82, alpha: 1)
@@ -114,7 +117,7 @@ final class LaptopPanelView: UIView {
         guard W > 0, H > 0 else { return }
 
         // Row height: touch bar 0.7, five key rows 1.0, trackpad zone gets the rest (min 3.2 units).
-        var unit = min(H / (0.7 + 5 + 3.4), W / 15 * 1.05)
+        var unit = min(H / (0.7 + 0.62 + 5 + 3.4), W / 15 * 1.05)
         unit = max(unit, 20)
         let gap: CGFloat = max(3, unit * 0.06)
         var y = top
@@ -123,8 +126,8 @@ final class LaptopPanelView: UIView {
         let barH = unit * 0.7
         bar.frame = CGRect(x: margin, y: y, width: W, height: barH)
         let barTotal = barKeys.reduce(0) { $0 + $1.widthUnits }
-        var bx: CGFloat = 6
-        let bw = bar.bounds.width - 12
+        let bw = min(bar.bounds.width - 12, unit * 9)
+        var bx: CGFloat = (bar.bounds.width - bw) / 2
         for k in barKeys {
             let w = bw * k.widthUnits / barTotal
             k.frame = CGRect(x: bx, y: 4, width: w - gap, height: barH - 8)
@@ -132,19 +135,20 @@ final class LaptopPanelView: UIView {
         }
         y += barH + gap * 2
 
-        // Key rows
-        for r in rows {
+        // Key rows (the function row is shorter)
+        for (ri, r) in rows.enumerated() {
+            let rh = ri == 0 ? unit * 0.62 : unit
             let total = r.reduce(0) { $0 + $1.widthUnits }
             var x = margin
             for k in r {
                 let w = W * k.widthUnits / total
-                k.frame = CGRect(x: x, y: y, width: w - gap, height: unit - gap)
+                k.frame = CGRect(x: x, y: y, width: w - gap, height: rh - gap)
                 x += w
             }
-            y += unit
+            y += rh
         }
         // Up/down arrows: halves of the placeholder cell
-        let cell = rows[5][7].frame
+        let cell = rows[6][7].frame
         arrowUp.frame = CGRect(x: cell.minX, y: cell.minY, width: cell.width, height: cell.height / 2 - 1)
         arrowDown.frame = CGRect(x: cell.minX, y: cell.minY + cell.height / 2 + 1, width: cell.width, height: cell.height / 2 - 1)
 
