@@ -483,9 +483,9 @@ class StreamActivity : Activity(), TouchDelegate {
                 }
                 ID_KEYBOARD -> setKeyboard(!kbShown)
                 ID_CAPTURE -> toggleLock()
-                ID_ORIENT_AUTO -> { Prefs.orientation = 0; Prefs.applyOrientation(this, true) }
-                ID_ORIENT_PORTRAIT -> { Prefs.orientation = 1; Prefs.applyOrientation(this, true) }
-                ID_ORIENT_LANDSCAPE -> { Prefs.orientation = 2; Prefs.applyOrientation(this, true) }
+                ID_ORIENT_AUTO -> { Prefs.orientation = 0; Prefs.applyOrientation(this, true); client.reconnectForResolution(this) }
+                ID_ORIENT_PORTRAIT -> { Prefs.orientation = 1; Prefs.applyOrientation(this, true); client.reconnectForResolution(this) }
+                ID_ORIENT_LANDSCAPE -> { Prefs.orientation = 2; Prefs.applyOrientation(this, true); client.reconnectForResolution(this) }
                 ID_DISCONNECT -> client.disconnect()
             }
             true

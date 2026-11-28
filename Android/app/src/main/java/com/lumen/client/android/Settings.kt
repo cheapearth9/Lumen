@@ -90,6 +90,17 @@ object Prefs {
 
     @Suppress("DEPRECATION")
     fun requestedResolution(ctx: Context): Pair<Int, Int> {
+        val (w, h) = requestedLandscape(ctx)
+        val portrait = when (orientation) {
+            1 -> true
+            2 -> false
+            else -> ctx.resources.displayMetrics.let { it.heightPixels > it.widthPixels }
+        }
+        return if (portrait) Pair(minOf(w, h), maxOf(w, h)) else Pair(maxOf(w, h), minOf(w, h))
+    }
+
+    @Suppress("DEPRECATION")
+    private fun requestedLandscape(ctx: Context): Pair<Int, Int> {
         when (resMode) {
             1 -> return Pair(1920, 1080)
             2 -> {

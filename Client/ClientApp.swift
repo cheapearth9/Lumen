@@ -138,7 +138,22 @@ struct RootView: View {
 enum ResolutionSetting {
     static let modeKey = "resMode", widthKey = "resW", heightKey = "resH"
 
+    /// The computer's screen is requested in landscape (wide) or portrait (tall) shape according to the orientation choice;
+    /// Auto follows how the device is held when the stream starts.
     static func requested() -> (Int, Int) {
+        let (w, h) = requestedLandscape()
+        let portrait: Bool
+        switch LumenSettings.orientation {
+        case "portrait": portrait = true
+        case "landscape": portrait = false
+        default:
+            let b = UIScreen.main.bounds
+            portrait = b.height > b.width && !ExternalDisplay.isActive
+        }
+        return portrait ? (min(w, h), max(w, h)) : (max(w, h), min(w, h))
+    }
+
+    private static func requestedLandscape() -> (Int, Int) {
         let d = UserDefaults.standard
         switch d.integer(forKey: modeKey) {
         case 1: return (1920, 1080)

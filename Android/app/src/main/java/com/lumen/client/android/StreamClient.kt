@@ -292,6 +292,18 @@ class StreamClient(private val app: Context) {
         }
     }
 
+    /** The orientation choice changed: ask the computer for a screen of the new shape. */
+    fun reconnectForResolution(ctx: android.content.Context) {
+        val (w, h) = Prefs.requestedResolution(ctx)
+        exec.execute {
+            val cur = hello
+            if (cur == null || !handshakeDone || (cur.width == w && cur.height == h)) return@execute
+            val n = cur.copy()
+            n.width = w; n.height = h
+            switchHello(n)
+        }
+    }
+
     private fun switchHello(h: HelloInfo) {
         hello = h
         gotWelcome = false

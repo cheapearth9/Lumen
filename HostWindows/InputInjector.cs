@@ -199,6 +199,16 @@ public sealed class InputInjector
         }
     }
 
+    // Windows wants small pointer ids (0..max contacts-1). Each device's touch ids are mapped to the lowest free one.
+    private static readonly Dictionary<int, int> _pids = new();
+
+    private static int Pid(int key)
+    {
+        if (_pids.TryGetValue(key, out var p)) return p;
+        for (int i = 0; i < 10; i++) if (!_pids.ContainsValue(i)) { _pids[key] = i; return i; }
+        return 0;
+    }
+
     private static POINTER_TOUCH_INFO MakeContact(int id, int px, int py, uint flags)
     {
         var c = new POINTER_TOUCH_INFO
@@ -209,7 +219,7 @@ public sealed class InputInjector
             rcContact = new RECT { left = px - 2, top = py - 2, right = px + 2, bottom = py + 2 }
         };
         c.pointerInfo.pointerType = 2;             // PT_TOUCH
-        c.pointerInfo.pointerId = (uint)id;
+        c.pointerInfo.pointerId = (uint)Pid(id);
         c.pointerInfo.pointerFlags = flags;
         c.pointerInfo.ptPixelLocation = new POINT { x = px, y = py };
         return c;
@@ -265,13 +275,13 @@ public sealed class InputInjector
         if (!InjectTouchInput((uint)frame.Count, frame.ToArray()))
         {
             HostLog.Write($"touch injection failed (error {Marshal.GetLastWin32Error()}, phase {phase})");
-            _contacts.Clear(); _downAt.Clear();
+            _contacts.Clear(); _downAt.Clear(); _pids.Clear();
             // Windows may still hold the failed contacts; re-initialising clears them so the next touch works.
             try { InitializeTouchInjection(10, 1); } catch { }
             return;
         }
 
-        if (phase >= 2) _contacts.Remove(id); else _contacts[id] = me;
+        if (phase >= 2) { _contacts.Remove(id); _pids.Remove(id); } else _contacts[id] = me;
     }
 
     private void Button(int index, bool down)

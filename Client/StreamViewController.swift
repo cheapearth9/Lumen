@@ -210,7 +210,7 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
         let om = LumenSettings.orientation
         func orient(_ title: String, _ icon: String, _ v: String) -> UIAction {
             UIAction(title: title, image: UIImage(systemName: icon), state: om == v ? .on : .off) { [weak self] _ in
-                LumenSettings.orientation = v; self?.rebuildMenu()
+                LumenSettings.orientation = v; self?.client.reconnectForResolution(); self?.rebuildMenu()
             }
         }
         let orientMenu = UIMenu(title: "", options: .displayInline, children: [
