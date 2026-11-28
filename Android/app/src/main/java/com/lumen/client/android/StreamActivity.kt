@@ -207,6 +207,12 @@ class StreamActivity : Activity(), TouchDelegate {
         locked = false
     }
 
+    /** Leaving the app ends the session (like Apollo/Sunshine): the computer drops back to its normal displays. */
+    override fun onStop() {
+        super.onStop()
+        if (ready && !isChangingConfigurations) client.disconnect(10 * 60_000L)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         if (!ready) return

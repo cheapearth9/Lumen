@@ -195,7 +195,19 @@ public sealed class WindowsPlatform : IPlatformHost
             _disposed = true;
             try { _watch.Dispose(); } catch { }
             try { _input.ReleaseAll(); } catch { }
-            if (_slot != null) lock (_p._slotLock) _slot.InUse = false;
+            if (_slot != null)
+            {
+                lock (_p._slotLock) _slot.InUse = false;
+                // The device left: remove its virtual display from Windows right away (short grace so a Wi-Fi <-> cable
+                // switch or a quick reconnect can still reuse it).
+                var slot = _slot; var p = _p;
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(2000);
+                    lock (p._slotLock)
+                        if (!slot.InUse) { try { slot.Vda?.Dispose(); } catch { } slot.Vda = null; }
+                });
+            }
         }
     }
 

@@ -164,6 +164,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        LumenApp.client.clearCableSuppression()
         launched = false
         client.addListener(listener)
         client.setDiscoveryActive(true)

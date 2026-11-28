@@ -254,11 +254,14 @@ class StreamClient(private val app: Context) {
         }
     }
 
-    fun disconnect() {
+    /** The app was opened again: accept the cable from the host again. */
+    fun clearCableSuppression() { suppressCableUntil = 0L }
+
+    fun disconnect(suppressMs: Long = 30_000) {
         exec.execute {
             send(PacketType.BYE, 0, EMPTY_BYTES)
             // The host re-offers the cable every couple of seconds: stay put after the user chose to leave.
-            if (isCable) suppressCableUntil = now() + 30_000
+            if (isCable) suppressCableUntil = now() + suppressMs
             teardown(true)
         }
     }

@@ -123,6 +123,13 @@ struct RootView: View {
         .onChange(of: scenePhase) { phase in
             // The cable listener can be torn down while backgrounded; re-arm it.
             if phase == .active { client.start() }
+            if phase == .background {
+                // Give the goodbye packet a moment to leave before iOS suspends the app.
+                var task = UIBackgroundTaskIdentifier.invalid
+                task = UIApplication.shared.beginBackgroundTask { UIApplication.shared.endBackgroundTask(task) }
+                client.disconnectForBackground()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { UIApplication.shared.endBackgroundTask(task) }
+            }
         }
     }
 
