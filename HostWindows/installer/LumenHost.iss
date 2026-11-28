@@ -79,3 +79,32 @@ function VigemBundled: Boolean;
 begin
   Result := FileExists(ExpandConstant('{app}\drivers\vigem\ViGEmBus_Setup.exe'));
 end;
+
+// The bundled adb keeps a background server (adb.exe) running, which locks its files during an update/uninstall.
+procedure StopAdb;
+var
+  Code: Integer;
+  Adb: String;
+begin
+  Adb := ExpandConstant('{app}\platform-tools\adb.exe');
+  if FileExists(Adb) then
+    Exec(Adb, 'kill-server', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM adb.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopAdb;
+  Result := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then StopAdb;
+end;
+
+function InitializeUninstall: Boolean;
+begin
+  StopAdb;
+  Result := True;
+end;
