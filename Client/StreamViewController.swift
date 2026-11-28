@@ -68,6 +68,8 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
         laptop.isHidden = true
         laptop.send = { [weak self] e in self?.client.sendInput(e) }
         laptop.moveCursor = { [weak self] dx, dy in self?.input.addRelative(dx: dx, dy: dy) }
+        laptop.seek = { [weak self] ms in self?.client.sendInput(.mediaSeek(ms: ms)) }
+        client.$nowPlaying.receive(on: DispatchQueue.main).sink { [weak self] in self?.laptop.nowPlaying = $0 }.store(in: &cancellables)
         laptop.sourcePixelsPerPoint = { [weak self] in self?.engineSourcePixelsPerPoint() ?? 1 }
         view.addSubview(laptop)
 

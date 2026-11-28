@@ -541,6 +541,10 @@ public sealed class HostServer : IDisposable
         SendSecure(c.Link, new[] { Wire.Simple(PacketType.Status, 0, body) }, false);
     }
 
+    /// Now-playing info for the iPad's Touch Bar scrubber: flags (1 available, 2 playing), position ms, duration ms, title.
+    public void SendMedia(HostClient c, byte[] payload) =>
+        SendSecure(c.Link, new[] { Wire.Simple(PacketType.Media, 0, payload) }, false);
+
     public void SendWelcome(HostClient c, WelcomeInfo w) =>
         SendSecure(c.Link, new[] { Wire.Simple(PacketType.Welcome, 0, w.Encode()) }, false);
 

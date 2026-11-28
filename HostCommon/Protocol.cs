@@ -4,7 +4,7 @@ namespace Lumen;
 
 // Wire protocol shared with Shared/Protocol.swift. Keep both in sync.
 
-public enum PacketType : byte { Hello = 1, Welcome = 2, Video = 3, Input = 4, KeyframeRequest = 5, Ping = 6, Bye = 7, Status = 8, Discover = 9, Announce = 10, Handshake = 11, Audio = 12, Pair = 13 }
+public enum PacketType : byte { Hello = 1, Welcome = 2, Video = 3, Input = 4, KeyframeRequest = 5, Ping = 6, Bye = 7, Status = 8, Discover = 9, Announce = 10, Handshake = 11, Audio = 12, Pair = 13, Media = 14 }
 
 public static class HostPlatformId { public const byte Mac = 1, Windows = 2, Linux = 3; }
 
@@ -49,7 +49,7 @@ public static class Wire
         h = default; payload = default;
         if (d.Length < HeaderSize) return false;
         if (BinaryPrimitives.ReadUInt16BigEndian(d.AsSpan(0)) != Magic) return false;
-        if (d[2] < 1 || d[2] > 13) return false;
+        if (d[2] < 1 || d[2] > 14) return false;
         h.Type = (PacketType)d[2];
         h.Flags = d[3];
         h.Id = BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(4));
@@ -115,7 +115,7 @@ public readonly record struct WelcomeInfo(ushort Width, ushort Height, byte Fps,
     }
 }
 
-public enum InputKind { MouseRel = 1, MouseAbs = 2, Button = 3, Scroll = 4, Key = 5, Touch = 6, Gamepad = 7, GamepadPresence = 8 }
+public enum InputKind { MouseRel = 1, MouseAbs = 2, Button = 3, Scroll = 4, Key = 5, Touch = 6, Gamepad = 7, GamepadPresence = 8, MediaSeek = 9 }
 
 public readonly record struct InputEvent(InputKind Kind, int A, int B, int C = 0, int D = 0, int E = 0, int F = 0, int G = 0)
 {
@@ -136,6 +136,7 @@ public readonly record struct InputEvent(InputKind Kind, int A, int B, int C = 0
             case 7 when d.Length >= 14: e = new(InputKind.Gamepad, d[1], BinaryPrimitives.ReadUInt16BigEndian(d[2..]), d[4], d[5],
                 BinaryPrimitives.ReadInt16BigEndian(d[6..]), BinaryPrimitives.ReadInt16BigEndian(d[8..]), BinaryPrimitives.ReadInt16BigEndian(d[10..]))
                 { Ry = BinaryPrimitives.ReadInt16BigEndian(d[12..]) }; return true;
+            case 9 when d.Length >= 5: e = new(InputKind.MediaSeek, (int)BinaryPrimitives.ReadUInt32BigEndian(d[1..]), 0); return true;
             case 8 when d.Length >= 3: e = new(InputKind.GamepadPresence, d[1], d[2]); return true;
             case 6 when d.Length >= 7: e = new(InputKind.Touch, d[1], d[2], BinaryPrimitives.ReadUInt16BigEndian(d[3..]), BinaryPrimitives.ReadUInt16BigEndian(d[5..])); return true;
         }

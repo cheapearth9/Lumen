@@ -56,6 +56,8 @@ public interface IPlatformSession : IDisposable
     Task<List<CaptureCandidate>> BuildCandidatesAsync(int w, int h, int fps, int bitrateBps, bool needScale, bool h264, Action<string> status);
     /// Raised when the captured display's position or size changed (monitor arrangement edited); capture is restarted, the client stays connected.
     event Action? LayoutChanged { add { } remove { } }
+    /// Where now-playing info (see HostServer.SendMedia) is delivered; platforms that can read it fill it in.
+    Action<byte[]>? MediaUpdate { get => null; set { } }
 }
 
 /// Platforms with a single display state (Linux) share it between sessions.
@@ -256,6 +258,7 @@ public sealed class HostCore : IDisposable
             bool wantExtend = _modeOverride ?? h.WantsExtend;
             var plat = _p.OpenSession(wantExtend, h.Width, h.Height, Paired.NameFor(client.KeyId) ?? "Lumen", out var note);
             sess.Plat = plat;
+            plat.MediaUpdate = b => { if (ReferenceEquals(client.Tag, sess)) _server.SendMedia(client, b); };
             plat.LayoutChanged += () =>
             {
                 if (!ReferenceEquals(sess.Plat, plat) || !sess.Active || !TryAutoRestart(client)) return;

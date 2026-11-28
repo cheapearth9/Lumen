@@ -19,6 +19,7 @@ enum PacketType: UInt8 {
     case announce = 10      // host -> client : platform byte + UTF-8 host name
     case handshake = 11     // key exchange, the only packet type besides discover/announce that is sent unencrypted
     case pair = 13          // both: device pairing (unencrypted, see Crypto.swift)
+    case media = 14         // host -> client : now-playing info for the Touch Bar scrubber
     case audio = 12         // host -> client : 240 frames of 48 kHz stereo s16le PCM (960 bytes)
 }
 
@@ -261,6 +262,7 @@ enum InputEvent {
     /// triggers 0...255; sticks -32768...32767 with up = positive Y (XInput convention).
     case gamepad(index: UInt8, buttons: UInt16, lt: UInt8, rt: UInt8, lx: Int16, ly: Int16, rx: Int16, ry: Int16)
     case gamepadPresence(index: UInt8, present: Bool)
+    case mediaSeek(ms: UInt32)               // seek the playing video (Windows host)
 
     /// Events that must not be lost (sent twice, de-duplicated on the host).
     var isDiscrete: Bool {
@@ -283,6 +285,7 @@ enum InputEvent {
         case .gamepad(let i, let b, let lt, let rt, let lx, let ly, let rx, let ry):
             w.u8(7); w.u8(i); w.u16(b); w.u8(lt); w.u8(rt); w.i16(lx); w.i16(ly); w.i16(rx); w.i16(ry)
         case .gamepadPresence(let i, let p): w.u8(8); w.u8(i); w.u8(p ? 1 : 0)
+        case .mediaSeek(let ms): w.u8(9); w.u32(ms)
         }
         return w.data
     }
@@ -300,6 +303,7 @@ enum InputEvent {
         case 7: if let i = r.u8(), let b = r.u16(), let lt = r.u8(), let rt = r.u8(), let lx = r.i16(), let ly = r.i16(), let rx = r.i16(), let ry = r.i16() {
             return .gamepad(index: i, buttons: b, lt: lt, rt: rt, lx: lx, ly: ly, rx: rx, ry: ry) }
         case 8: if let i = r.u8(), let p = r.u8() { return .gamepadPresence(index: i, present: p != 0) }
+        case 9: if let ms = r.u32() { return .mediaSeek(ms: ms) }
         default: break
         }
         return nil

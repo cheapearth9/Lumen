@@ -52,7 +52,7 @@ final class InputInjector {
         case .button(let b, let down):
             button(b, down: down)
 
-        case .touch, .gamepad, .gamepadPresence:
+        case .touch, .gamepad, .gamepadPresence, .mediaSeek:
             break   // macOS has no public API for synthetic touch events; the iPad app emulates touch with mouse input for Mac hosts
 
         case .scroll(let dx, let dy):

@@ -9,6 +9,16 @@ final class LaptopPanelView: UIView {
     /// Cursor movement (host pixels) from the trackpad.
     var moveCursor: ((Float, Float) -> Void)?
     var sourcePixelsPerPoint: (() -> CGFloat)?
+    /// Seek the playing video to this position (ms).
+    var seek: ((UInt32) -> Void)?
+    var nowPlaying: NowPlaying? {
+        didSet {
+            let was = oldValue?.available == true
+            scrubber.update(nowPlaying)
+            if was != (nowPlaying?.available == true) { setNeedsLayout() }
+        }
+    }
+    private let scrubber = ScrubberView()
 
     private struct KeySpec {
         var label: String
@@ -42,6 +52,8 @@ final class LaptopPanelView: UIView {
         bar.backgroundColor = .black
         bar.layer.cornerRadius = 10
         addSubview(bar)
+        bar.addSubview(scrubber)
+        scrubber.onSeek = { [weak self] ms in self?.seek?(ms) }
         // Touch Bar: media / volume controls (Windows host; other hosts ignore them).
         let media: [KeySpec] = [KeySpec(label: "⏮", code: 205, width: 1), KeySpec(label: "⏯", code: 203, width: 1), KeySpec(label: "⏭", code: 204, width: 1),
                                 KeySpec(label: "mute", code: 200, width: 1), KeySpec(label: "vol −", code: 201, width: 1), KeySpec(label: "vol +", code: 202, width: 1)]
@@ -125,13 +137,26 @@ final class LaptopPanelView: UIView {
         // Touch bar
         let barH = unit * 0.7
         bar.frame = CGRect(x: margin, y: y, width: W, height: barH)
-        let barTotal = barKeys.reduce(0) { $0 + $1.widthUnits }
-        let bw = min(bar.bounds.width - 12, unit * 9)
-        var bx: CGFloat = (bar.bounds.width - bw) / 2
-        for k in barKeys {
-            let w = bw * k.widthUnits / barTotal
-            k.frame = CGRect(x: bx, y: 4, width: w - gap, height: barH - 8)
-            bx += w
+        if nowPlaying?.available == true {
+            // Playing something: [prev play next]  ----scrubber----  [mute vol- vol+]
+            scrubber.isHidden = false
+            let kw = min(unit * 1.05, (bar.bounds.width - 12) * 0.075)
+            for (i, k) in barKeys.enumerated() {
+                let x = i < 3 ? 6 + CGFloat(i) * kw : bar.bounds.width - 6 - CGFloat(6 - i) * kw
+                k.frame = CGRect(x: x, y: 4, width: kw - gap, height: barH - 8)
+            }
+            let sx = 6 + 3 * kw + 8
+            scrubber.frame = CGRect(x: sx, y: 0, width: bar.bounds.width - 6 - 3 * kw - 8 - sx, height: barH)
+        } else {
+            scrubber.isHidden = true
+            let barTotal = barKeys.reduce(0) { $0 + $1.widthUnits }
+            let bw = min(bar.bounds.width - 12, unit * 9)
+            var bx: CGFloat = (bar.bounds.width - bw) / 2
+            for k in barKeys {
+                let w = bw * k.widthUnits / barTotal
+                k.frame = CGRect(x: bx, y: 4, width: w - gap, height: barH - 8)
+                bx += w
+            }
         }
         y += barH + gap * 2
 
@@ -278,4 +303,106 @@ private final class RestView: UIView {
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {}
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {}
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {}
+}
+
+
+// MARK: - Touch Bar scrubber (macOS style: elapsed time, slider, remaining time)
+
+private final class ScrubberView: UIView {
+    var onSeek: ((UInt32) -> Void)?
+    private let elapsed = UILabel(), remaining = UILabel()
+    private let track = UIView(), fill = UIView(), thumb = UIView()
+    private var info: NowPlaying?
+    private var dragging = false
+    private var dragFraction: CGFloat = 0
+    private var lastSent = Date.distantPast
+    private var timer: Timer?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        for l in [elapsed, remaining] {
+            l.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            l.textColor = UIColor(white: 0.85, alpha: 1)
+            addSubview(l)
+        }
+        remaining.textAlignment = .right
+        track.backgroundColor = UIColor(white: 0.3, alpha: 1)
+        fill.backgroundColor = UIColor(white: 0.9, alpha: 1)
+        thumb.backgroundColor = .white
+        thumb.layer.shadowColor = UIColor.black.cgColor
+        thumb.layer.shadowOpacity = 0.5
+        thumb.layer.shadowRadius = 2
+        thumb.layer.shadowOffset = .zero
+        for v in [track, fill, thumb] { addSubview(v) }
+        isMultipleTouchEnabled = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    func update(_ np: NowPlaying?) {
+        info = np
+        if np?.available == true {
+            if timer == nil { timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.refresh() } }
+        } else { timer?.invalidate(); timer = nil }
+        refresh()
+    }
+
+    private static func fmt(_ ms: Double) -> String {
+        let t = Int(max(0, ms) / 1000)
+        let h = t / 3600, m = (t % 3600) / 60, s = t % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+
+    private var trackFrame: CGRect { CGRect(x: 52, y: bounds.midY - 2, width: max(10, bounds.width - 104), height: 4) }
+
+    private func refresh() {
+        guard let np = info, np.available, np.durationMs > 0 else { return }
+        let dur = Double(np.durationMs)
+        let frac = dragging ? dragFraction : CGFloat(min(1, max(0, np.currentMs / dur)))
+        elapsed.text = Self.fmt(Double(frac) * dur)
+        remaining.text = "-" + Self.fmt(dur - Double(frac) * dur)
+        setNeedsLayout()
+        fractionShown = frac
+        layoutIfNeeded()
+    }
+    private var fractionShown: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        elapsed.frame = CGRect(x: 0, y: 0, width: 48, height: bounds.height)
+        remaining.frame = CGRect(x: bounds.width - 48, y: 0, width: 48, height: bounds.height)
+        let t = trackFrame
+        track.frame = t; track.layer.cornerRadius = 2
+        fill.frame = CGRect(x: t.minX, y: t.minY, width: t.width * fractionShown, height: t.height); fill.layer.cornerRadius = 2
+        let d: CGFloat = dragging ? 22 : 16
+        thumb.frame = CGRect(x: t.minX + t.width * fractionShown - d / 2, y: bounds.midY - d / 2, width: d, height: d)
+        thumb.layer.cornerRadius = d / 2
+    }
+
+    private func fraction(for touch: UITouch) -> CGFloat {
+        let t = trackFrame
+        return min(1, max(0, (touch.location(in: self).x - t.minX) / t.width))
+    }
+
+    private func drag(_ touch: UITouch, final: Bool) {
+        guard let np = info, np.available else { return }
+        dragFraction = fraction(for: touch)
+        if final || Date().timeIntervalSince(lastSent) > 0.2 {
+            lastSent = Date()
+            onSeek?(UInt32(Double(dragFraction) * Double(np.durationMs)))
+        }
+        refresh()
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let t = touches.first else { return }
+        dragging = true
+        drag(t, final: false)
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { drag(t, final: false) } }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let t = touches.first { drag(t, final: true) }
+        // keep showing the dragged spot briefly so the bar doesn't jump back before the host reports the new position
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.dragging = false; self?.refresh() }
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { dragging = false; refresh() }
 }

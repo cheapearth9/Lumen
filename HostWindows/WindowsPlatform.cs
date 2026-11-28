@@ -176,8 +176,17 @@ public sealed class WindowsPlatform : IPlatformHost
         }
 
         public (int W, int H) SourceSize { get { var b = Screen_().Bounds; return (b.Width, b.Height); } }
+        private MediaBridge? _media;
+        private Action<byte[]>? _mu;
+        public Action<byte[]>? MediaUpdate
+        {
+            get => _mu;
+            set { _mu = value; if (value != null && _media == null) _media = new MediaBridge(b => _mu?.Invoke(b)); }
+        }
+
         public void HandleInput(InputEvent e)
         {
+            if (e.Kind == InputKind.MediaSeek) { _media?.Seek((uint)e.A); return; }
             // Touch down: re-read the monitor position first so a just-moved monitor is hit correctly.
             if (e.Kind == InputKind.Touch && e.B == 0 && Environment.TickCount64 - _inputCheck > 150)
             {
@@ -193,6 +202,7 @@ public sealed class WindowsPlatform : IPlatformHost
         public void Dispose()
         {
             _disposed = true;
+            try { _media?.Dispose(); } catch { }
             try { _watch.Dispose(); } catch { }
             try { _input.ReleaseAll(); } catch { }
             if (_slot != null)

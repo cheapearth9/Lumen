@@ -45,6 +45,8 @@ final class StreamClient: ObservableObject {
     }
 
     @Published var state: State = .idle
+    /// What the computer is playing (Windows host), for the Touch Bar scrubber; nil when unknown.
+    @Published var nowPlaying: NowPlaying?
     @Published var hosts: [DiscoveredHost] = []
     @Published var statsText = ""
     @Published var videoSize = CGSize(width: 16, height: 9)
@@ -830,6 +832,13 @@ final class StreamClient: ObservableObject {
             } else if !text.isEmpty {
                 showToast(text)
             }
+        case .media:
+            var r = ByteReader(payload)
+            guard let flags = r.u8(), let pos = r.u32(), let dur = r.u32() else { return }
+            let title = String(decoding: payload.dropFirst(9), as: UTF8.self)
+            let np = NowPlaying(available: flags & 1 != 0 && dur > 0, playing: flags & 2 != 0,
+                                positionMs: pos, durationMs: dur, title: title, receivedAt: Date())
+            DispatchQueue.main.async { self.nowPlaying = np }
         case .ping:
             let now = UInt32(truncatingIfNeeded: DispatchTime.now().uptimeNanoseconds / 1_000_000)
             rttMs = Int(now &- h.id)
@@ -870,5 +879,21 @@ final class StreamClient: ObservableObject {
         guard Date().timeIntervalSince(lastKeyRequest) > 0.1 else { return }
         lastKeyRequest = Date()
         send(.keyframeRequest)
+    }
+}
+
+
+/// Now-playing info from the computer (position is as of `receivedAt`; add the elapsed time while playing).
+struct NowPlaying {
+    var available: Bool
+    var playing: Bool
+    var positionMs: UInt32
+    var durationMs: UInt32
+    var title: String
+    var receivedAt: Date
+
+    var currentMs: Double {
+        let base = Double(positionMs)
+        return playing ? min(Double(durationMs), base + Date().timeIntervalSince(receivedAt) * 1000) : base
     }
 }
