@@ -18,6 +18,7 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
     private let engine = TouchEngine()
     private let touchView = TouchSurfaceView()
     private let videoView = VideoView()
+    private let laptop = LaptopPanelView()
     private let statsLabel = UILabel()
     private let toastLabel = UILabel()
     private let menuButton = UIButton(type: .system)
@@ -61,6 +62,14 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
         touchView.frame = view.bounds
         touchView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(touchView)
+
+        laptop.frame = view.bounds
+        laptop.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        laptop.isHidden = true
+        laptop.send = { [weak self] e in self?.client.sendInput(e) }
+        laptop.moveCursor = { [weak self] dx, dy in self?.input.addRelative(dx: dx, dy: dy) }
+        laptop.sourcePixelsPerPoint = { [weak self] in self?.engineSourcePixelsPerPoint() ?? 1 }
+        view.addSubview(laptop)
 
         videoView.frame = touchView.bounds
         videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -147,7 +156,12 @@ final class StreamViewController: UIViewController, TouchEngineDelegate {
     }
 
     @objc private func externalChanged() {
-        videoView.isHidden = ExternalDisplay.isActive
+        let ext = ExternalDisplay.isActive
+        videoView.isHidden = ext
+        // With a monitor attached this screen becomes a laptop keyboard + trackpad.
+        if ext { engine.cancelAll() } else { laptop.releaseAll() }
+        laptop.isHidden = !ext
+        touchView.isUserInteractionEnabled = !ext
         rebuildMenu()
         client.reconnectForResolution()
     }
